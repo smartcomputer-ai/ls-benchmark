@@ -418,6 +418,57 @@ default, and creates it at startup; `api-key` (hosted) uses the universe the
 environments all live in that universe, so the hosted campaign should get a
 dedicated evaluation universe with its own API key and registration key.
 
+### Hosted run (ls.bot)
+
+Facts verified 2026-09-02 against the production deployment in
+`../ls.bot` (`infra/compose.yaml`, `infra/deploy/hz01/caddy/Caddyfile`):
+
+- The deployed release is the `main` merge of the `harbor` branch,
+  `2093b949`, so the registration protocol matches this checkout.
+- Caddy publishes `wss://ls.bot/environment-gateway/connect` and `/data`;
+  `LIGHTSPEED_PUBLIC_BASE_URL=https://ls.bot`, so daemons dial the same host
+  for data sockets. Since 2026-09-02 the api-key gateway is also public at
+  `https://ls.bot/rpc` (bearer `lsk_` keys only; tenant headers rejected).
+  The trusted-header gateway and operator methods stay on hz01 loopback.
+- The x86_64 envd of every release is an OCI bundle; on hz01
+  `infra/scripts/fetch-lightspeed-binary envd <dest>` extracts and verifies
+  it. arm64 sandboxes (this laptop) use `scripts/build-envd-linux.sh arm64`
+  from the same commit.
+- The prod `OPENAI_API_KEY` is not a fallback for universes on the api-key
+  gateway: `models/list` in a fresh universe reports
+  `provider credential is not configured` (source `none`). Each universe
+  needs its own `model:openai` credential, an operator hand-off item.
+- Compute: hz02 (32 threads, 125 GiB, 1 TB Incus pool, KVM, no host Docker)
+  is where a `harbor-runner` VM with its own Docker daemon belongs. A guest
+  there reaches ls.bot publicly and hz01's gateways over the tailnet. Harbor's
+  Docker backend bind-mounts `/logs` from the orchestrator host, so Harbor
+  itself runs inside that VM and the laptop drives it over SSH.
+
+Operator hand-off, done 2026-09-02: evaluation universe
+`b11a978a-cf38-4e7d-9d90-43bf3c8cfb89` (`ls-benchmark`), API key prefix
+`lsk_F_j4vhqy`. Both live only in `.local/hosted.env`; revoking the key on
+hz01 ends all benchmark access.
+
+```bash
+scripts/run-hosted.sh configs/toy.local.yaml
+```
+
+Hosted run log:
+
+- 2026-09-02, first attempt: registration through `wss://ls.bot` and the
+  receipt/`environments/read` cross-check succeeded, then `models/list`
+  reported `provider credential is not configured`; cleanup closed the
+  environment. The operator installed a `model:openai` credential in the
+  universe (`auth model add`; `models/list` now reports `configured`,
+  source `universe`).
+- 2026-09-02, second attempt: complete. Reward 1.0, registration 1.5 s,
+  run accepted at 5.3 s, terminal at 11.6 s, 2258 input tokens (1095
+  cached), 56 output, 8 reasoning; `session/close`, `envd/stop`,
+  `environments/close` ok; both trial environments `closed` in the key's
+  list. This satisfies slice 5's "Harbor on a developer machine, task
+  compute connecting to hosted Lightspeed" with the compute still on the
+  laptop; the hz02 runner is what remains for amd64 Terminal-Bench images.
+
 ## Open decisions
 
 - Package name `lightspeed_harbor` inside repository `ls-benchmark`: kept
