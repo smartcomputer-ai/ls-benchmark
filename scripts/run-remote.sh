@@ -44,6 +44,14 @@ sync_repo() {
   rsync -az .local/hosted.env "$RUNNER:$REMOTE_DIR/.local/hosted.env"
   rsync -az .local/envd/x86_64-unknown-linux-gnu "$RUNNER:$REMOTE_DIR/.local/envd/"
   rssh "chmod 600 '$REMOTE_DIR/.local/hosted.env'"
+  # GitHub throttles unauthenticated clones from the VM's Hetzner address, so
+  # ship Harbor's task cache (harbor dataset download <name>@<version> --cache
+  # here first); the job then finds every task cached and clones nothing.
+  if [ -d "$HOME/.cache/harbor/tasks" ]; then
+    rssh "mkdir -p .cache/harbor/tasks"
+    rsync -az "$HOME/.cache/harbor/tasks/" "$RUNNER:.cache/harbor/tasks/"
+    log "task cache synced ($(find "$HOME/.cache/harbor/tasks" -maxdepth 3 -name task.toml | wc -l | tr -d ' ') tasks)"
+  fi
   log "synced to $RUNNER:$REMOTE_DIR"
 }
 

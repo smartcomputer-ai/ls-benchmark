@@ -493,6 +493,17 @@ release lock, and starts `scripts/run-hosted.sh` detached under
 Set `LS_REMOTE_ENV='LS_KEY_MAX_ACTIVE=16'` on `start` to size the campaign
 registration key above the job's concurrency.
 
+Two things learned bringing the VM up (both folded into the scripts): the
+`images:` Ubuntu cloud image has no `openssh-server`, and cloud-init leaves
+the user locked so sshd refuses key auth until `usermod -p '*'`. And GitHub
+throttles unauthenticated git-over-HTTPS from the VM's Hetzner address (10 of
+12 parallel shallow clones failed, then single clones), so the dataset is
+downloaded into Harbor's task cache on the laptop
+(`harbor dataset download terminal-bench@2.0 --cache`) and `sync` ships
+`~/.cache/harbor/tasks` to the VM; the job finds every task cached. Docker
+Hub allows 100 anonymous pulls per hour from that address, enough for the 89
+images.
+
 ## Open decisions
 
 - Package name `lightspeed_harbor` inside repository `ls-benchmark`: kept
