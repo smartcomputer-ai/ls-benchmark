@@ -8,7 +8,8 @@
 # host's 127.0.0.1:18080 from `./dev.sh runtime`). The CA root is exported to
 # .local/gateway-ca.pem for LIGHTSPEED_HARBOR_ENVD_CA_FILE.
 #
-# Usage: scripts/local-gateway-tls.sh [up|down|status]
+# Usage: scripts/local-gateway-tls.sh [up|down|recreate|status]
+# `up` is idempotent: it reuses a running terminator and re-exports its CA.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -20,13 +21,19 @@ CA_OUT=.local/gateway-ca.pem
 case "${1:-up}" in
   up)
     mkdir -p .local
-    docker rm -f "$NAME" >/dev/null 2>&1 || true
-    docker run -d --name "$NAME" --restart unless-stopped \
-      -p "${LISTEN_PORT}:${LISTEN_PORT}" caddy:2 \
-      caddy reverse-proxy \
-        --from "https://host.docker.internal:${LISTEN_PORT}" \
-        --to "http://${UPSTREAM}" \
-        --internal-certs >/dev/null
+    state="$(docker inspect -f '{{.State.Status}}' "$NAME" 2>/dev/null || echo absent)"
+    case "$state" in
+      running) ;;
+      absent)
+        docker run -d --name "$NAME" --restart unless-stopped \
+          -p "${LISTEN_PORT}:${LISTEN_PORT}" caddy:2 \
+          caddy reverse-proxy \
+            --from "https://host.docker.internal:${LISTEN_PORT}" \
+            --to "http://${UPSTREAM}" \
+            --internal-certs >/dev/null
+        ;;
+      *) docker start "$NAME" >/dev/null ;;
+    esac
     for _ in $(seq 1 60); do
       if docker cp "$NAME:/data/caddy/pki/authorities/local/root.crt" "$CA_OUT" >/dev/null 2>&1; then
         break
@@ -34,18 +41,22 @@ case "${1:-up}" in
       sleep 0.5
     done
     [ -s "$CA_OUT" ] || { echo "Caddy CA root did not appear; see: docker logs $NAME" >&2; exit 1; }
-    echo "# TLS terminator up: https://host.docker.internal:${LISTEN_PORT} -> http://${UPSTREAM}" >&2
+    echo "# TLS terminator ${state/absent/created}: https://host.docker.internal:${LISTEN_PORT} -> http://${UPSTREAM}" >&2
     echo "export LIGHTSPEED_ENVD_GATEWAY_URL=wss://host.docker.internal:${LISTEN_PORT}/environment-gateway/connect"
     echo "export LIGHTSPEED_HARBOR_ENVD_CA_FILE=$(pwd)/${CA_OUT}"
     ;;
   down)
     docker rm -f "$NAME" >/dev/null 2>&1 || true
     ;;
+  recreate)
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+    exec "$0" up
+    ;;
   status)
     docker ps --filter "name=$NAME" --format '{{.Names}} {{.Status}}'
     ;;
   *)
-    echo "usage: $0 [up|down|status]" >&2
+    echo "usage: $0 [up|down|recreate|status]" >&2
     exit 2
     ;;
 esac

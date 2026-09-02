@@ -46,4 +46,9 @@ docker run --rm --platform "linux/$ARCH" \
     install -m 0755 /target/release/lightspeed-envd /out/lightspeed-envd
   '
 (cd "$OUT" && shasum -a 256 lightspeed-envd | tee lightspeed-envd.sha256 >&2)
+if [ -n "$(git -C "$LS" status --porcelain -- crates)" ]; then
+  echo "$GIT_SHA-dirty" > "$OUT/lightspeed-envd.gitsha"
+else
+  echo "$GIT_SHA" > "$OUT/lightspeed-envd.gitsha"
+fi
 echo "export LIGHTSPEED_HARBOR_ENVD_PATH=$(pwd)/$OUT/lightspeed-envd"

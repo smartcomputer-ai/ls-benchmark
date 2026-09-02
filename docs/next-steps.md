@@ -374,7 +374,17 @@ LIGHTSPEED_PUBLIC_BASE_URL=https://host.docker.internal:18443 ./dev.sh runtime
 LIGHTSPEED_PUBLIC_BASE_URL=https://host.docker.internal:18443 ./dev.sh
 ```
 
-Terminal 2, in this repository:
+Terminal 2, in this repository, the one-command form:
+
+```bash
+scripts/run-local.sh configs/toy.local.yaml
+```
+
+It syncs the uv environment, checks the gateway and its public base URL,
+reuses or starts the TLS terminator, rebuilds `envd` when the sibling
+checkout changed, mints or reuses the registration key, runs Harbor under a
+timestamped job name, and prints one line per trial. The manual steps it
+wraps:
 
 ```bash
 # TLS in front of 127.0.0.1:18080 for sandboxes; prints two exports.
@@ -395,9 +405,18 @@ uv run harbor run -c configs/toy.local.yaml
 ```
 
 The oracle trial proves the verifier; the Lightspeed trial proves the chain.
-Inspect `jobs/toy-local/<trial>/agent/lightspeed/{registration,run,provenance}.json`
+Inspect `jobs/<job>/<trial>/agent/lightspeed/{registration,run,provenance}.json`
 and `agent/lightspeed/envd.log`. `scripts/local-gateway-tls.sh down` removes
 the terminator.
+
+Which universe: the adapter never names one. The gateway resolves it from
+its auth mode: `single` (the `runtime` profile) pins every request to
+`LIGHTSPEED_PG_UNIVERSE_ID`, `00000000-0000-0000-0000-000000000001` by
+default, and creates it at startup; `api-key` (hosted) uses the universe the
+`lsk_` key was minted for; `trusted-header` (the `full` profile) takes
+`LIGHTSPEED_UNIVERSE`. The registration key, sessions, and registered
+environments all live in that universe, so the hosted campaign should get a
+dedicated evaluation universe with its own API key and registration key.
 
 ## Open decisions
 
