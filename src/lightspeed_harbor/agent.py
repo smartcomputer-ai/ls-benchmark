@@ -52,6 +52,8 @@ AGENT_NAME = "lightspeed"
 DEFAULT_WORKDIR = "/app"
 _EVENT_PAGE_LIMIT = 500
 _EVENT_MAX_PAGES = 40
+_MODEL_LIST_ATTEMPTS = 4
+_MODEL_LIST_BACKOFF_SEC = 2.0
 
 
 def _utcnow() -> str:
@@ -303,7 +305,7 @@ class LightspeedAgent(BaseAgent):
     # --- pieces of the run -------------------------------------------------
 
     def _make_client(self) -> LightspeedClient:
-        return LightspeedClient(self.host.api_url, self.host.api_key)
+        return LightspeedClient(self.host.api_url, self.host.api_key, universe=self.host.universe)
 
     @staticmethod
     def _workdir(environment: BaseEnvironment) -> str:
@@ -337,9 +339,34 @@ class LightspeedAgent(BaseAgent):
         return str(key_id)
 
     async def _resolve_model(self, client: LightspeedClient) -> dict[str, str]:
-        """Map Harbor's ``model_name`` to one explicit Lightspeed model route. No fallback."""
+        """Map Harbor's ``model_name`` to one explicit Lightspeed model route. No fallback.
+
+        ``models/list`` queries the provider live, so a transient provider error
+        (an HTTP 500 from the model catalog) is retried a few times: it happens
+        before any model call and cannot be influenced by the task.
+        """
         settings = self.settings
-        listing = await client.models_list()
+        listing: dict[str, Any] = {}
+        for attempt in range(1, _MODEL_LIST_ATTEMPTS + 1):
+            listing = await client.models_list()
+            provider = next(
+                (
+                    p
+                    for p in listing.get("providers", [])
+                    if p.get("providerId") == settings.lightspeed_provider_id
+                ),
+                None,
+            )
+            if provider is None or not provider.get("error") or attempt == _MODEL_LIST_ATTEMPTS:
+                break
+            self.logger.warning(
+                "models/list: provider %s reported %r (attempt %d/%d), retrying",
+                settings.lightspeed_provider_id,
+                provider.get("error"),
+                attempt,
+                _MODEL_LIST_ATTEMPTS,
+            )
+            await asyncio.sleep(_MODEL_LIST_BACKOFF_SEC * attempt)
         providers = {p.get("providerId"): p for p in listing.get("providers", [])}
         provider = providers.get(settings.lightspeed_provider_id)
         if provider is None:

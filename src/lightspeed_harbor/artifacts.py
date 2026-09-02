@@ -29,6 +29,10 @@ PROVENANCE_JSON = "provenance.json"
 
 _HEADER_MARKERS = ("authorization: bearer", '"authorization"')
 
+# A placeholder such as ``LIGHTSPEED_API_KEY=local`` (single-mode gateways
+# ignore the header) would match ordinary words; real keys are far longer.
+MIN_SECRET_LENGTH = 12
+
 
 class RedactionError(RuntimeError):
     """An artifact would have contained a secret; nothing was written."""
@@ -40,7 +44,7 @@ def assert_no_secrets(text: str, secrets: Iterable[str]) -> None:
         if marker in lowered:
             raise RedactionError("artifact contains an authorization header")
     for secret in secrets:
-        if secret and secret in text:
+        if len(secret) >= MIN_SECRET_LENGTH and secret in text:
             raise RedactionError("artifact contains a configured secret")
 
 

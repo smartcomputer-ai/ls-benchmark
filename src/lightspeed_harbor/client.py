@@ -9,7 +9,9 @@ Transport: one ``POST`` per call to ``LIGHTSPEED_API_URL`` with
 ``AgentApiOutcome<T>``, ``{"result": T, "notifications": [...]}``, or a
 JSON-RPC ``error`` whose ``data`` is an ``AgentApiError`` ``{kind, message}``.
 Auth is ``Authorization: Bearer <LIGHTSPEED_API_KEY>``; a ``single``-mode
-gateway ignores the header, ``api-key`` mode requires it.
+gateway ignores the header, ``api-key`` mode requires it. A ``trusted-header``
+gateway (behind an authenticating proxy, or the local ``./dev.sh`` full
+profile) instead resolves the tenant from ``x-lightspeed-universe``.
 """
 
 from __future__ import annotations
@@ -87,9 +89,11 @@ class LightspeedClient:
         timeout_sec: float = 60.0,
         transport: httpx.AsyncBaseTransport | None = None,
         client_name: str = "ls-benchmark",
+        universe: str | None = None,
     ) -> None:
         self.api_url = api_url
         self._api_key = api_key
+        self._universe = universe
         self._timeout_sec = timeout_sec
         self._transport = transport
         self._client_name = client_name
@@ -100,6 +104,8 @@ class LightspeedClient:
         headers = {"content-type": "application/json", "user-agent": f"ls-benchmark/{__version__}"}
         if self._api_key:
             headers["authorization"] = f"Bearer {self._api_key}"
+        if self._universe:
+            headers["x-lightspeed-universe"] = self._universe
         self._http = httpx.AsyncClient(
             headers=headers, timeout=self._timeout_sec, transport=self._transport
         )

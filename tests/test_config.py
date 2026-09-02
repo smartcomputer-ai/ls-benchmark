@@ -65,3 +65,12 @@ def test_redacted_view_has_no_secrets():
     assert "registration_key" not in redacted
     assert "lsk_test" not in str(redacted)
     assert "lsrk_test" not in str(redacted)
+
+
+def test_universe_is_optional_and_trimmed():
+    assert HostSettings.from_env(BASE).universe is None
+    settings = HostSettings.from_env(
+        {**BASE, "LIGHTSPEED_UNIVERSE": " 00000000-0000-0000-0000-000000000001 "}
+    )
+    assert settings.universe == "00000000-0000-0000-0000-000000000001"
+    assert settings.redacted()["universe"] == settings.universe

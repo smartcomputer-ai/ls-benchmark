@@ -274,3 +274,45 @@ async def test_run_without_setup_is_refused(tmp_path: Path, host: HostSettings):
     agent = make_agent(tmp_path, host, FakeLightspeed())
     with pytest.raises(HarnessSetupError, match="setup"):
         await agent.run(INSTRUCTION, FakeEnvironment(), AgentContext())
+
+
+def test_short_placeholder_keys_do_not_poison_redaction():
+    from lightspeed_harbor.artifacts import RedactionError, assert_no_secrets
+
+    assert_no_secrets('{"job": "toy-local", "host": "localhost"}', ["local"])
+    with pytest.raises(RedactionError):
+        assert_no_secrets('{"key": "lsrk_DQCi0aqxxxxxxxxxxxx"}', ["lsrk_DQCi0aqxxxxxxxxxxxx"])
+
+
+async def test_transient_model_catalog_error_is_retried(
+    tmp_path: Path, host: HostSettings, monkeypatch
+):
+    import lightspeed_harbor.agent as agent_module
+
+    monkeypatch.setattr(agent_module, "_MODEL_LIST_BACKOFF_SEC", 0.0)
+    fake = FakeLightspeed(run_statuses=("completed",))
+    fake.provider_errors = ["provider returned HTTP 500", "provider returned HTTP 500"]
+    env = FakeEnvironment()
+    agent = make_agent(tmp_path, host, fake)
+    context = AgentContext()
+    await agent.setup(env)
+    await agent.run(INSTRUCTION, env, context)
+    assert fake.methods().count("models/list") == 3
+    assert context.metadata["lightspeed"]["status"] == "completed"
+
+
+async def test_persistent_model_catalog_error_fails_closed(
+    tmp_path: Path, host: HostSettings, monkeypatch
+):
+    import lightspeed_harbor.agent as agent_module
+
+    monkeypatch.setattr(agent_module, "_MODEL_LIST_BACKOFF_SEC", 0.0)
+    fake = FakeLightspeed()
+    fake.provider_errors = ["provider returned HTTP 500"] * 10
+    env = FakeEnvironment()
+    agent = make_agent(tmp_path, host, fake)
+    await agent.setup(env)
+    with pytest.raises(HarnessSetupError, match="provider returned HTTP 500"):
+        await agent.run(INSTRUCTION, env, AgentContext())
+    assert fake.methods().count("models/list") == agent_module._MODEL_LIST_ATTEMPTS
+    assert "session/start" not in fake.methods()

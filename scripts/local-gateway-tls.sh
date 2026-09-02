@@ -21,7 +21,8 @@ case "${1:-up}" in
   up)
     mkdir -p .local
     docker rm -f "$NAME" >/dev/null 2>&1 || true
-    docker run -d --name "$NAME" -p "${LISTEN_PORT}:${LISTEN_PORT}" caddy:2 \
+    docker run -d --name "$NAME" --restart unless-stopped \
+      -p "${LISTEN_PORT}:${LISTEN_PORT}" caddy:2 \
       caddy reverse-proxy \
         --from "https://host.docker.internal:${LISTEN_PORT}" \
         --to "http://${UPSTREAM}" \

@@ -164,6 +164,8 @@ class FakeLightspeed:
             "metadata": {"source": "harbor"},
         }
         self.failure_message = failure_message
+        # Provider errors to report on successive models/list calls (then healthy).
+        self.provider_errors: list[str] = []
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -207,6 +209,7 @@ class FakeLightspeed:
                 "capabilities": {},
             }
         if method == "models/list":
+            error = self.provider_errors.pop(0) if self.provider_errors else None
             return {
                 "providers": [
                     {
@@ -214,9 +217,10 @@ class FakeLightspeed:
                         "apiKinds": ["openai:responses"],
                         "credential": "configured",
                         "credentialSource": "deployment",
+                        "error": error,
                     }
                 ],
-                "models": self.models,
+                "models": [] if error else self.models,
             }
         if method == "environments/read":
             return {"environment": self.environment}

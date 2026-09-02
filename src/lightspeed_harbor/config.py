@@ -22,6 +22,7 @@ ENV_ENVD_RELEASE_URL = "LIGHTSPEED_HARBOR_ENVD_RELEASE_URL"
 ENV_ENVD_SHA256 = "LIGHTSPEED_HARBOR_ENVD_SHA256"
 ENV_ENVD_VERSION = "LIGHTSPEED_HARBOR_ENVD_VERSION"
 ENV_ENVD_CA_FILE = "LIGHTSPEED_HARBOR_ENVD_CA_FILE"
+ENV_UNIVERSE = "LIGHTSPEED_UNIVERSE"
 
 REQUIRED_HOST_VARS = (ENV_API_URL, ENV_API_KEY, ENV_REGISTRATION_KEY, ENV_GATEWAY_URL)
 
@@ -55,6 +56,9 @@ class HostSettings:
     envd_sha256: str | None = None
     envd_version: str | None = None
     envd_ca_file: Path | None = None
+    # Sent as ``x-lightspeed-universe`` for a ``trusted-header`` gateway (the
+    # ``./dev.sh`` full profile). ``single`` and ``api-key`` gateways reject it.
+    universe: str | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> HostSettings:
@@ -98,6 +102,7 @@ class HostSettings:
             envd_sha256=sha256,
             envd_version=env.get(ENV_ENVD_VERSION) or None,
             envd_ca_file=ca_file,
+            universe=(env.get(ENV_UNIVERSE) or "").strip() or None,
         )
 
     def redacted(self) -> dict[str, str | None]:
@@ -110,6 +115,7 @@ class HostSettings:
             "envd_sha256": self.envd_sha256,
             "envd_version": self.envd_version,
             "envd_ca_file": str(self.envd_ca_file) if self.envd_ca_file else None,
+            "universe": self.universe,
         }
 
     def secrets(self) -> tuple[str, ...]:

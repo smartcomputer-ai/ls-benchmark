@@ -58,6 +58,20 @@ async def test_no_key_means_no_header():
     assert seen["auth"] is None
 
 
+async def test_universe_header_for_trusted_header_gateways():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["universe"] = request.headers.get("x-lightspeed-universe")
+        return httpx.Response(200, json={"id": 1, "result": {"result": {}}})
+
+    async with LightspeedClient(
+        "http://127.0.0.1:18080/rpc", "local", transport=_server(handler), universe="u-1"
+    ) as client:
+        await client.initialize()
+    assert seen["universe"] == "u-1"
+
+
 async def test_error_data_kind_wins_over_code():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

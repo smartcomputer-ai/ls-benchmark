@@ -147,8 +147,13 @@ fakes without a source patch or unpinned dependency.
 - [x] Deterministic local toy task `tasks/toy-file-write` (verifier checks
   one file's exact bytes) with `configs/toy.local.yaml` (oracle arm plus the
   Lightspeed arm).
-- [ ] Verify `/logs` artifact collection on the toy task with `oracle` and the
-  Lightspeed arm (needs the local run below).
+- [x] `oracle` on the toy task: reward 1.0, `/logs/verifier` collected
+  (2026-09-02, local Docker, arm64).
+- [x] Lightspeed arm on the toy task end to end (2026-09-02, local stack,
+  `gpt-5.6-terra`, `openai:responses`, reasoning `low`): reward 1.0,
+  `envd.log`, `registration.json`, `run.json`, `provenance.json` collected;
+  see the local run log below. Slice 2's exit criterion is met against the
+  local stack; the hosted deployment is the remaining variable.
 - [x] JSON-RPC client is hand-written over `httpx`; `tests/test_client.py`
   checks its method set against `openrpc.json` in the sibling checkout.
 
@@ -328,16 +333,45 @@ minimal cut across the slices, in order (steps 2 to 5 landed 2026-09-02;
 7. Smoke on the committed allowlist: `oracle` first, then the paired job, on
    native `linux/amd64` compute (see the decision below).
 
+### Local run log
+
+- 2026-09-02, first attempt: `envd` (aarch64 build from `harbor` @ `2093b949`)
+  registered through the Caddy TLS terminator in 0.35 s and received a
+  server-assigned environment id; `environments/read` agreed with the
+  receipt. `models/list` then reported `provider returned HTTP 500` from
+  OpenAI's catalog, the trial ended as `harness_setup`, cleanup closed the
+  environment (the leak audit by key shows it `closed`), and the sandbox went
+  on to the verifier untouched. Two fixes followed: `models/list` is retried
+  four times with backoff when the provider reports an error, and the
+  artifact redaction scan ignores placeholder secrets shorter than 12
+  characters (`LIGHTSPEED_API_KEY=local` matched `toy-local`).
+- 2026-09-02, second attempt: complete. Registration 0.37 s, run accepted
+  at 3.8 s, terminal at 7.9 s; 5 context entries, 1 tool batch, 2266 input
+  tokens (1095 cached), 64 output, 16 reasoning; verifier reward 1.0; cleanup
+  `session/close`, `envd/stop`, `environments/close` all ok; the key's
+  environment list shows both trial environments `closed`; no leftover
+  containers. Whole job (oracle plus Lightspeed, including the image build)
+  took 38 s.
+- Every OpenAI model is exposed over both `openai:responses` and
+  `openai:completions`, so `kwargs.api_kind` is effectively required for the
+  OpenAI provider; the committed configs set `openai:responses`, which is
+  what the Codex CLI uses.
+
 ### Local run recipe (step 6)
 
-Terminal 1, the local stack from the sibling checkout. The runtime profile
-uses auth mode `single` and runs every role including `environment-gateway`.
-The public base URL must be the TLS terminator below, because the gateway
-derives the data-socket URL from it:
+Terminal 1, the local stack from the sibling checkout. Either profile works;
+both run every role including `environment-gateway`. The public base URL must
+be the TLS terminator below, because the gateway derives the data-socket URL
+from it, so a stack started without it has to be restarted:
 
 ```bash
 cd ../lightspeed
+# runtime profile: auth mode `single`, no UI, nothing else to configure
 LIGHTSPEED_PUBLIC_BASE_URL=https://host.docker.internal:18443 ./dev.sh runtime
+# or the full profile: auth mode `trusted-header`, Platform UI on :5173 shows
+# the registered environments and sessions; the adapter then also needs
+#   export LIGHTSPEED_UNIVERSE=<universe id the Platform organization uses>
+LIGHTSPEED_PUBLIC_BASE_URL=https://host.docker.internal:18443 ./dev.sh
 ```
 
 Terminal 2, in this repository:
@@ -354,7 +388,7 @@ export LIGHTSPEED_API_URL=http://127.0.0.1:18080/rpc
 (cd ../lightspeed && cargo run -q -p cli -- env registration-keys create \
   --name harbor-local --mode ephemeral --max-active 4 --expires-in-hours 24)
 export LIGHTSPEED_HARBOR_REGISTRATION_KEY=<secret from above>
-export LIGHTSPEED_API_KEY=local   # single-mode gateway ignores it
+export LIGHTSPEED_API_KEY=local   # single and trusted-header gateways ignore it
 
 # Fill the model id in configs/toy.local.yaml, then:
 uv run harbor run -c configs/toy.local.yaml
