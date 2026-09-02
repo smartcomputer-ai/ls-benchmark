@@ -1,0 +1,40 @@
+# Terminal-Bench 2.0, Lightspeed arm only, on the hz02 runner VM.
+#
+# Schema: Harbor 0.22.0. Dataset resolved by Harbor's default registry:
+# laude-institute/terminal-bench-2 at 69671fbaac6d67a7ef0dfec016cc38a64ef7a77c,
+# 89 tasks, prebuilt linux/amd64 images, 900 s agent and verifier timeouts.
+#
+# Model and effort: gpt-5.6-terra (chosen 2026-09-02; not a dated snapshot,
+# the resolved id is recorded in provenance.json) at reasoning effort `high`,
+# which is also Harbor's default for the Codex arm, so a later paired run
+# matches without changing this file.
+#
+# Concurrency: 12 trials at once on a 24 vCPU / 96 GiB VM; tasks declare
+# 1 CPU and 2 to 4 GiB each. The registration key is minted with
+# LS_KEY_MAX_ACTIVE above this number.
+
+job_name: terminal-bench-lightspeed
+jobs_dir: jobs
+n_attempts: 1
+n_concurrent_trials: 12
+
+retry:
+  max_retries: 0
+
+environment:
+  type: docker
+  delete: true
+
+datasets:
+  - name: terminal-bench
+    version: "2.0"
+
+agents:
+  - import_path: lightspeed_harbor.agent:LightspeedAgent
+    model_name: openai/gpt-5.6-terra
+    n_concurrent: 12
+    kwargs:
+      lightspeed_provider_id: openai
+      profile_id: inline
+      api_kind: openai:responses
+      reasoning_effort: high

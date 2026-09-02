@@ -469,6 +469,30 @@ Hosted run log:
   compute connecting to hosted Lightspeed" with the compute still on the
   laptop; the hz02 runner is what remains for amd64 Terminal-Bench images.
 
+### hz02 runner and the remote flow
+
+Created 2026-09-02 with `scripts/hz02-runner.sh create`: Incus VM
+`harbor-runner` on hz02 (`images:ubuntu/24.04/cloud`, 24 vCPU, 96 GiB,
+500 GiB on the `default` btrfs pool, `incusbr0` NAT egress), cloud-init
+installs Docker CE with the compose plugin, uv, git, rsync, tmux. The laptop
+reaches it as `Host harbor-runner` (ProxyJump hz02, user `harbor`). The VM
+has no credentials for hz01 or hz02; it only needs `https://ls.bot`.
+
+```bash
+scripts/run-remote.sh start configs/terminal-bench.lightspeed.yaml --install-only   # envd on every image, no model calls
+scripts/run-remote.sh start configs/terminal-bench.lightspeed.yaml                  # the run
+scripts/run-remote.sh status | log | fetch [job] | stop
+```
+
+`start` rsyncs the repository plus `.local/hosted.env` and the staged
+x86_64 envd (`.local/envd/x86_64-unknown-linux-gnu/`, extracted from the
+deployed release bundle on hz01 with `infra/scripts/fetch-lightspeed-binary
+envd`, commit stamp beside it) to the VM, checks the stamp against hz01's
+release lock, and starts `scripts/run-hosted.sh` detached under
+`.local/runs/<utc>.log`. `fetch` brings `jobs/<job>` back for `report.py`.
+Set `LS_REMOTE_ENV='LS_KEY_MAX_ACTIVE=16'` on `start` to size the campaign
+registration key above the job's concurrency.
+
 ## Open decisions
 
 - Package name `lightspeed_harbor` inside repository `ls-benchmark`: kept
