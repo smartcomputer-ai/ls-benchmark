@@ -1,0 +1,48 @@
+# Paired smoke job on local Docker.
+#
+# Schema: Harbor 0.22.0, harbor.models.job.config.JobConfig.
+# NOT RUNNABLE YET: LightspeedAgent.setup/run are unimplemented
+# (docs/next-steps.md, slice 2). Structure is validated by tests/.
+#
+# Replace every <placeholder> before a run. Never use `latest` for Harbor,
+# the dataset, the model, or the envd artifact.
+
+job_name: smoke-local
+jobs_dir: jobs
+n_attempts: 1
+n_concurrent_trials: 2
+
+retry:
+  # Whole-trial retries are allowed only for an explicit infrastructure
+  # allowlist, decided in slice 3. Until then, none.
+  max_retries: 0
+
+environment:
+  type: docker
+  delete: true
+
+datasets:
+  - name: terminal-bench/terminal-bench-2-1
+    version: "<pinned-dataset-version>"
+    # Smoke allowlist (file editing, long-running commands, process control,
+    # output-heavy interaction) goes here once selected in slice 1:
+    # task_names:
+    #   - <task-name>
+
+agents:
+  - name: codex
+    model_name: openai/<immutable-model-id>
+    n_concurrent: 1
+    kwargs:
+      reasoning_effort: <effort>
+
+  - import_path: lightspeed_harbor.agent:LightspeedAgent
+    model_name: openai/<immutable-model-id>
+    n_concurrent: 1
+    kwargs:
+      lightspeed_provider_id: <lightspeed-provider-id>
+      profile_id: harbor-terminal
+      reasoning_effort: <effort>
+    # Only the Lightspeed arm needs egress to the Lightspeed gateway.
+    extra_allowed_hosts:
+      - lightspeed-gateway.example
