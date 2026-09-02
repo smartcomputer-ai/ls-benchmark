@@ -30,14 +30,6 @@ never provisions the sandbox, reinterprets the verifier, or implements a Harbor
 environment. Only `lightspeed-envd` runs inside the sandbox; all model turns
 and environment operations run through hosted Lightspeed.
 
-## Status
-
-This repository is a scaffold. Nothing runs a trial yet. The Harbor dependency
-is pinned and importable, the agent class loads through Harbor's import path,
-and host-side configuration is validated. The implementation backlog, ordered
-by slice, is in [docs/next-steps.md](docs/next-steps.md). The Lightspeed
-interfaces the adapter depends on are summarized in
-[docs/lightspeed-contract.md](docs/lightspeed-contract.md).
 
 ## The Lightspeed sibling checkout
 
@@ -94,36 +86,6 @@ Host-side configuration is read from the environment; see
 [.env.example](.env.example). No secret is ever written into a task sandbox
 except the registration key file, which is deleted once the registration
 receipt appears.
-
-## Layout
-
-```text
-ls-benchmark/
-├── README.md
-├── pyproject.toml
-├── uv.lock                       pinned Harbor and adapter dependencies
-├── .env.example                  host-side configuration names
-├── src/lightspeed_harbor/
-│   ├── agent.py                  LightspeedAgent, Harbor's external BaseAgent
-│   ├── config.py                 host settings and per-agent kwargs, fail closed
-│   ├── client.py                 Lightspeed JSON-RPC client (stub)
-│   ├── envd.py                   envd artifact selection, upload, start, receipt (stub)
-│   ├── artifacts.py              per-trial artifact export and redaction (stub)
-│   └── provenance.py             run provenance manifest (stub)
-├── configs/
-│   └── smoke.local.yaml          example paired job config for local Docker
-├── scripts/
-│   ├── preflight.py              parity and oracle preflight (stub)
-│   └── report.py                 paired report from retained files (stub)
-├── tests/
-└── docs/
-    ├── next-steps.md             implementation backlog by slice
-    └── lightspeed-contract.md    Lightspeed interfaces the adapter uses
-```
-
-The importable Harbor agent is `lightspeed_harbor.agent:LightspeedAgent`. The
-package name follows the adapter name used in the Lightspeed design document;
-the distribution and repository are named `ls-benchmark`.
 
 ## License
 

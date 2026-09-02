@@ -22,12 +22,21 @@ environment:
   delete: true
 
 datasets:
-  - name: terminal-bench/terminal-bench-2-1
-    version: "<pinned-dataset-version>"
-    # Smoke allowlist (file editing, long-running commands, process control,
-    # output-heavy interaction) goes here once selected in slice 1:
-    # task_names:
-    #   - <task-name>
+  # Resolved by Harbor's default registry: laude-institute/terminal-bench-2 at
+  # 69671fbaac6d67a7ef0dfec016cc38a64ef7a77c, prebuilt linux/amd64 images.
+  - name: terminal-bench
+    version: "2.0"
+    # Smoke allowlist, chosen for integration coverage rather than score:
+    # quick file edit (regex-log), output-heavy log processing
+    # (log-summary-date-ranges), editing plus compile (polyglot-c-py),
+    # long-running build (sqlite-with-gcov), background process control
+    # (qemu-startup). Oracle preflight decides whether each stays.
+    task_names:
+      - regex-log
+      - log-summary-date-ranges
+      - polyglot-c-py
+      - sqlite-with-gcov
+      - qemu-startup
 
 agents:
   - name: codex
