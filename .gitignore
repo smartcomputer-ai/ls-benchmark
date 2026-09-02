@@ -219,3 +219,6 @@ __marimo__/
 
 # Harbor job output
 jobs/
+
+# ls-benchmark local state: TLS CA, locally built envd binaries
+.local/

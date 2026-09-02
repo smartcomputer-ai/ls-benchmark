@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 from harbor.agents.factory import AgentFactory
-from harbor.environments.base import BaseEnvironment
-from harbor.models.agent.context import AgentContext
 
 from lightspeed_harbor import __version__
 from lightspeed_harbor.agent import AGENT_NAME, LightspeedAgent
@@ -23,7 +20,7 @@ def test_factory_creates_agent_from_import_path(tmp_path: Path, host_settings: H
         logs_dir=tmp_path,
         model_name="openai/model-snapshot",
         lightspeed_provider_id="provider_1",
-        profile_id="harbor-terminal",
+        profile_id="inline",
         reasoning_effort="high",
         host_settings=host_settings,
     )
@@ -50,7 +47,7 @@ def test_host_settings_come_from_environment(tmp_path: Path, monkeypatch: pytest
         logs_dir=tmp_path,
         model_name="openai/model-snapshot",
         lightspeed_provider_id="provider_1",
-        profile_id="harbor-terminal",
+        profile_id="inline",
         # Harbor's agents[].env wins over the process environment.
         extra_env={"LIGHTSPEED_API_URL": "https://override.example/rpc"},
     )
@@ -63,7 +60,7 @@ def test_model_name_is_required(tmp_path: Path, host_settings: HostSettings):
         LightspeedAgent(
             logs_dir=tmp_path,
             lightspeed_provider_id="provider_1",
-            profile_id="harbor-terminal",
+            profile_id="inline",
             host_settings=host_settings,
         )
 
@@ -73,7 +70,7 @@ def test_provider_and_profile_are_required(tmp_path: Path, host_settings: HostSe
         LightspeedAgent(
             logs_dir=tmp_path,
             model_name="openai/model-snapshot",
-            profile_id="harbor-terminal",
+            profile_id="inline",
             host_settings=host_settings,
         )
     with pytest.raises(ConfigError, match="profile_id"):
@@ -85,17 +82,24 @@ def test_provider_and_profile_are_required(tmp_path: Path, host_settings: HostSe
         )
 
 
-async def test_setup_and_run_are_not_implemented_yet(tmp_path: Path, host_settings: HostSettings):
-    """Documents the scaffold state. Replace when slice 2 lands."""
-    agent = LightspeedAgent(
-        logs_dir=tmp_path,
-        model_name="openai/model-snapshot",
-        lightspeed_provider_id="provider_1",
-        profile_id="harbor-terminal",
-        host_settings=host_settings,
-    )
-    environment = MagicMock(spec=BaseEnvironment)
-    with pytest.raises(NotImplementedError):
-        await agent.setup(environment)
-    with pytest.raises(NotImplementedError):
-        await agent.run("instruction", environment, AgentContext())
+def test_named_profiles_are_not_supported_yet(tmp_path: Path, host_settings: HostSettings):
+    with pytest.raises(ConfigError, match="named Lightspeed profiles"):
+        LightspeedAgent(
+            logs_dir=tmp_path,
+            model_name="openai/model-snapshot",
+            lightspeed_provider_id="provider_1",
+            profile_id="harbor-terminal",
+            host_settings=host_settings,
+        )
+
+
+def test_optional_limits_are_validated(tmp_path: Path, host_settings: HostSettings):
+    with pytest.raises(ConfigError, match="max_turns"):
+        LightspeedAgent(
+            logs_dir=tmp_path,
+            model_name="openai/model-snapshot",
+            lightspeed_provider_id="provider_1",
+            profile_id="inline",
+            max_turns=0,
+            host_settings=host_settings,
+        )

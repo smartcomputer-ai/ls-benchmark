@@ -25,7 +25,7 @@ starts it as Harbor's `environment.default_user` with:
 | `LIGHTSPEED_ENVD_CWD` | Harbor's agent working directory. |
 | `LIGHTSPEED_ENVD_FS_ROOT` | `/` for the terminal-only track, subject to the same uid, gid, mounts, and container policy as the Codex process. |
 | `LIGHTSPEED_ENVD_STATE_DIR` | Private directory inside the trial sandbox. Holds the Ed25519 daemon key (`daemon-key`, mode `0600`). Deleting it registers a new environment. |
-| `LIGHTSPEED_ENVD_CA_FILE` | Optional extra TLS trust anchors for a gateway behind a private CA. |
+| `LIGHTSPEED_ENVD_CA_FILE` | Optional extra TLS trust anchors for a gateway behind a private CA. The adapter uploads `LIGHTSPEED_HARBOR_ENVD_CA_FILE` from the host and points this at the copy. |
 
 Identity mode is registration-key policy, not a daemon setting. The daemon
 has no mode flag.
@@ -80,20 +80,42 @@ Methods the adapter calls, with the required parameters:
 Registered environments are grouped by registration key. The key's display
 name is the group shown in model and UI views.
 
+### Adapter-side layout
+
+Inside the sandbox the adapter keeps everything under
+`/tmp/lightspeed-harbor/` (mode `0700`, owned by the task user): `bin/lightspeed-envd`,
+`state/` (`LIGHTSPEED_ENVD_STATE_DIR`), `registration.key` (deleted after the
+receipt), `receipt.json`, `envd.pid`, and `gateway-ca.pem`. The daemon is
+started with `setsid nohup ... &` so its process group can be terminated in
+`finally`; stdout and stderr go to `/logs/agent/lightspeed/envd.log`, which
+Harbor syncs with the agent logs. The adapter's own JSON artifacts
+(`registration.json`, `run.json`, `provenance.json`) are written on the Harbor
+host under `<trial>/agent/lightspeed/`, so they exist even when the sandbox is
+unreachable; that is the one deviation from the `/logs/artifacts/lightspeed/`
+paths in P149.
+
 ## envd artifact
 
 The binary is built from `crates/environment-daemon` as `lightspeed-envd`.
-The release pipeline (`scripts/release/build-dist.sh`) stages it under the
-name `envd` for target `x86_64-unknown-linux-gnu` alongside a checksum file.
-No standalone `envd` release URL is published yet; until one exists, use the
-`LIGHTSPEED_HARBOR_ENVD_PATH` override with a locally built binary:
+The release pipeline (`scripts/release/build-dist.sh`) packages it as
+`lightspeed-envd-<version>-x86_64-unknown-linux-gnu.tar.gz` (one member,
+`lightspeed-envd`) plus a checksum file. The adapter accepts either that
+archive or a bare binary at `LIGHTSPEED_HARBOR_ENVD_RELEASE_URL`, verifies
+`LIGHTSPEED_HARBOR_ENVD_SHA256` against the download, and caches the binary
+under `~/.cache/ls-benchmark/envd/<sha256>/`.
 
-```bash
-cd ../lightspeed
-cargo build -p environment-daemon --release
-# target/release/lightspeed-envd on the host architecture; cross-compile for
-# the sandbox architecture (linux/amd64 first) before uploading.
-```
+Two facts to keep in mind when choosing the artifact:
+
+- The release builds on `rust:1.97.1-bookworm`, so the binary links against
+  glibc 2.36. Terminal-Bench images based on `debian:bullseye` (glibc 2.31)
+  will fail `envd --version` in `setup`, before any model call. A musl
+  (static) target or an older build base on the Lightspeed side removes the
+  constraint; until then such tasks are preflight exclusions.
+- Only `x86_64-unknown-linux-gnu` is published. The adapter probes the sandbox
+  with `uname -m` and also accepts `aarch64-unknown-linux-gnu` for arm64
+  daemons; build that one locally with `scripts/build-envd-linux.sh arm64`
+  (Docker, same pinned toolchain image) and point
+  `LIGHTSPEED_HARBOR_ENVD_PATH` at `.local/envd/aarch64-unknown-linux-gnu/lightspeed-envd`.
 
 ## Local stack for integration tests
 

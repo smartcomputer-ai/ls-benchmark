@@ -21,8 +21,14 @@ ENV_ENVD_PATH = "LIGHTSPEED_HARBOR_ENVD_PATH"
 ENV_ENVD_RELEASE_URL = "LIGHTSPEED_HARBOR_ENVD_RELEASE_URL"
 ENV_ENVD_SHA256 = "LIGHTSPEED_HARBOR_ENVD_SHA256"
 ENV_ENVD_VERSION = "LIGHTSPEED_HARBOR_ENVD_VERSION"
+ENV_ENVD_CA_FILE = "LIGHTSPEED_HARBOR_ENVD_CA_FILE"
 
 REQUIRED_HOST_VARS = (ENV_API_URL, ENV_API_KEY, ENV_REGISTRATION_KEY, ENV_GATEWAY_URL)
+
+# The only profile selector implemented so far: the adapter builds the
+# terminal-only session config itself. A committed Lightspeed profile
+# (``harbor-terminal``) is a later slice; naming one today is a config error.
+PROFILE_INLINE = "inline"
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
@@ -48,6 +54,7 @@ class HostSettings:
     envd_release_url: str | None = None
     envd_sha256: str | None = None
     envd_version: str | None = None
+    envd_ca_file: Path | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> HostSettings:
@@ -64,7 +71,7 @@ class HostSettings:
 
         envd_path = Path(env[ENV_ENVD_PATH]) if env.get(ENV_ENVD_PATH) else None
         release_url = env.get(ENV_ENVD_RELEASE_URL) or None
-        sha256 = env.get(ENV_ENVD_SHA256) or None
+        sha256 = (env.get(ENV_ENVD_SHA256) or None) and env[ENV_ENVD_SHA256].strip().lower()
         if envd_path is None and (release_url is None or sha256 is None):
             raise ConfigError(
                 f"select an envd artifact: set {ENV_ENVD_PATH} for a local binary, "
@@ -72,6 +79,14 @@ class HostSettings:
             )
         if envd_path is not None and release_url is not None:
             raise ConfigError(f"{ENV_ENVD_PATH} and {ENV_ENVD_RELEASE_URL} are mutually exclusive")
+        if sha256 is not None and (
+            len(sha256) != 64 or any(c not in "0123456789abcdef" for c in sha256)
+        ):
+            raise ConfigError(f"{ENV_ENVD_SHA256} must be 64 hex characters")
+
+        ca_file = Path(env[ENV_ENVD_CA_FILE]) if env.get(ENV_ENVD_CA_FILE) else None
+        if ca_file is not None and not ca_file.is_file():
+            raise ConfigError(f"{ENV_ENVD_CA_FILE} does not name a readable file: {ca_file}")
 
         return cls(
             api_url=api_url,
@@ -82,6 +97,7 @@ class HostSettings:
             envd_release_url=release_url,
             envd_sha256=sha256,
             envd_version=env.get(ENV_ENVD_VERSION) or None,
+            envd_ca_file=ca_file,
         )
 
     def redacted(self) -> dict[str, str | None]:
@@ -93,7 +109,12 @@ class HostSettings:
             "envd_release_url": self.envd_release_url,
             "envd_sha256": self.envd_sha256,
             "envd_version": self.envd_version,
+            "envd_ca_file": str(self.envd_ca_file) if self.envd_ca_file else None,
         }
+
+    def secrets(self) -> tuple[str, ...]:
+        """Values that must never appear in any artifact or log."""
+        return tuple(value for value in (self.api_key, self.registration_key) if value)
 
 
 def _validate_gateway_url(url: str) -> None:
@@ -115,6 +136,9 @@ class AgentSettings:
     lightspeed_provider_id: str
     profile_id: str
     reasoning_effort: str | None = None
+    api_kind: str | None = None
+    max_turns: int | None = None
+    max_output_tokens: int | None = None
 
     @classmethod
     def resolve(
@@ -124,6 +148,9 @@ class AgentSettings:
         lightspeed_provider_id: str | None,
         profile_id: str | None,
         reasoning_effort: str | None = None,
+        api_kind: str | None = None,
+        max_turns: int | None = None,
+        max_output_tokens: int | None = None,
     ) -> AgentSettings:
         if not model_name:
             raise ConfigError("model_name is required; the adapter never infers a model")
@@ -134,6 +161,14 @@ class AgentSettings:
             raise ConfigError("kwargs.lightspeed_provider_id is required")
         if not profile_id:
             raise ConfigError("kwargs.profile_id is required")
+        if profile_id != PROFILE_INLINE:
+            raise ConfigError(
+                f"kwargs.profile_id must be {PROFILE_INLINE!r}: named Lightspeed profiles are "
+                "not supported yet (docs/next-steps.md, path to the first run, step 5)"
+            )
+        for name, value in (("max_turns", max_turns), ("max_output_tokens", max_output_tokens)):
+            if value is not None and (not isinstance(value, int) or value <= 0):
+                raise ConfigError(f"kwargs.{name} must be a positive integer")
         return cls(
             model_name=model_name,
             model_provider=provider,
@@ -141,4 +176,20 @@ class AgentSettings:
             lightspeed_provider_id=lightspeed_provider_id,
             profile_id=profile_id,
             reasoning_effort=reasoning_effort or None,
+            api_kind=api_kind or None,
+            max_turns=max_turns,
+            max_output_tokens=max_output_tokens,
         )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "model_name": self.model_name,
+            "model_provider": self.model_provider,
+            "model_id": self.model_id,
+            "lightspeed_provider_id": self.lightspeed_provider_id,
+            "profile_id": self.profile_id,
+            "reasoning_effort": self.reasoning_effort,
+            "api_kind": self.api_kind,
+            "max_turns": self.max_turns,
+            "max_output_tokens": self.max_output_tokens,
+        }

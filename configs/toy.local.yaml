@@ -1,0 +1,28 @@
+# Local integration job: the deterministic toy task through hosted or local
+# Lightspeed. Steps 6 and 7 of "Path to the first run" in docs/next-steps.md.
+#
+# Schema: Harbor 0.22.0, harbor.models.job.config.JobConfig.
+# Replace <immutable-model-id> before a run. The `oracle` arm runs the task's
+# solution without any model and proves the verifier; drop it once it passes.
+
+job_name: toy-local
+jobs_dir: jobs
+n_attempts: 1
+n_concurrent_trials: 1
+
+environment:
+  type: docker
+  delete: true
+
+tasks:
+  - path: tasks/toy-file-write
+
+agents:
+  - name: oracle
+
+  - import_path: lightspeed_harbor.agent:LightspeedAgent
+    model_name: openai/<immutable-model-id>
+    kwargs:
+      lightspeed_provider_id: openai
+      profile_id: inline
+      reasoning_effort: low

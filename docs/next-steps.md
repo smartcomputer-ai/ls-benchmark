@@ -74,6 +74,18 @@ Lightspeed contract: see [lightspeed-contract.md](lightspeed-contract.md).
 - Codex arm setup needs egress to `raw.githubusercontent.com`, `nodejs.org`,
   and the npm registry (nvm plus `npm install -g @openai/codex`) before the
   agent phase. The `codex` agent takes a `version` kwarg to pin the CLI.
+- The gateway tells a registered daemon where to dial its data sockets by
+  deriving `wss://.../environment-gateway/data` from
+  `LIGHTSPEED_PUBLIC_BASE_URL` (`http` becomes `ws`, `https` becomes `wss`).
+  A sandboxed `envd` therefore needs the runtime's public base URL to be
+  reachable from inside the sandbox, not the default `http://127.0.0.1:18080`.
+- The release `envd` links glibc 2.36 (`rust:1.97.1-bookworm`). Task images on
+  `debian:bullseye` (glibc 2.31; `qemu-startup` is one) will fail
+  `envd --version` in `setup`, before a model call. A musl build on the
+  Lightspeed side removes the constraint; until then it is a preflight
+  exclusion, visible per task.
+- The single-mode local gateway ignores `Authorization`, so any placeholder
+  `LIGHTSPEED_API_KEY` satisfies the adapter's fail-closed check there.
 - Lightspeed API shapes the client will use (`api.schema.json`):
   - `session/start {sessionId?, displayName?, profile?, config?}`; `profile`
     is `{kind: "named", profileId}` or `{kind: "inline", profile}`.
@@ -118,54 +130,81 @@ fakes without a source patch or unpinned dependency.
   and five tasks: `regex-log`, `log-summary-date-ranges`, `polyglot-c-py`,
   `sqlite-with-gcov`, `qemu-startup`. Oracle preflight decides whether they
   stay.
-- [ ] Model mapping: resolve Harbor `model_name` (`<provider>/<id>`) to one
-  explicit Lightspeed model-provider record via `lightspeed_provider_id`;
-  reject aliases that are not immutable snapshots; no fallback.
-- [ ] Provenance manifest (`provenance.py`): adapter commit, `uv.lock` digest,
-  Harbor version, Codex agent version, Lightspeed `initialize` response,
-  profile revision/digest, `envd` version and SHA-256, dataset ref, resolved
-  model settings, UTC times.
-- [ ] Fake `BaseEnvironment` and fake Lightspeed client for unit tests.
-- [ ] A deterministic local toy task (`harbor init` template) whose verifier
-  checks a filesystem mutation; verify `/logs` artifact collection with the
-  `nop` and `oracle` agents.
-- [ ] Decide whether the JSON-RPC client is hand-written over `httpx` or
-  generated from `../lightspeed/crates/api/contract/openrpc.json`.
+- [x] Model mapping: `models/list` must expose exactly `<id>` under
+  `lightspeed_provider_id`, and the API kind is taken from that route (or
+  `kwargs.api_kind` when a model has several); anything else is a
+  `HarnessSetupError` before a session exists. Not done: rejecting provider
+  aliases that are not immutable snapshots, which needs a per-provider list.
+- [~] Provenance manifest: `provenance.json` per trial carries adapter and
+  Harbor versions, Python, redacted host settings, agent settings, the
+  Lightspeed `initialize` response, `envd` version/platform/SHA-256, Harbor
+  session and context ids, UTC times. Still missing: adapter commit,
+  `uv.lock` digest, Codex agent version, profile digest, dataset ref and
+  image digests (job-level, belongs in `preflight.py`).
+- [x] Fake `BaseEnvironment` and fake Lightspeed client for unit tests
+  (`tests/fakes.py`: recorded `exec`/uploads with a simulated envd lifecycle,
+  and an `httpx.MockTransport` JSON-RPC server).
+- [x] Deterministic local toy task `tasks/toy-file-write` (verifier checks
+  one file's exact bytes) with `configs/toy.local.yaml` (oracle arm plus the
+  Lightspeed arm).
+- [ ] Verify `/logs` artifact collection on the toy task with `oracle` and the
+  Lightspeed arm (needs the local run below).
+- [x] JSON-RPC client is hand-written over `httpx`; `tests/test_client.py`
+  checks its method set against `openrpc.json` in the sibling checkout.
 
 ## Slice 2 — Real outbound environment lifecycle
 
 Exit: a local Harbor toy task is completed by hosted Lightspeed through the
 real `envd`, then verified by Harbor in the unchanged sandbox.
 
-- [ ] `envd.py`: select the artifact for the sandbox platform (linux/amd64
-  first, linux/arm64 next), verify SHA-256 on the host, upload through
-  `environment.upload_file`, `chmod +x`, and check `envd --version` as
-  `environment.default_user`. Unsupported platforms fail before a model call.
+- [x] `envd.py`: probes `uname -m` in the sandbox (linux/amd64 and
+  linux/arm64), verifies SHA-256 on the host (local override or downloaded
+  release archive/binary, cached by digest), uploads, chowns to the task
+  user, `chmod 0755`, runs `envd --version` as the task user and compares
+  it with `LIGHTSPEED_HARBOR_ENVD_VERSION` when set. Unsupported platforms
+  fail before a model call.
 - [ ] Lightspeed side: publish a standalone `lightspeed-envd` release artifact
   with checksum, or document the release bundle path for the pinned Lightspeed
   version. Until then, `LIGHTSPEED_HARBOR_ENVD_PATH` is the only path.
-- [ ] `run()`: write the registration key to a mode-`0600` file inside the
-  sandbox, start `envd` with the variables in
-  [lightspeed-contract.md](lightspeed-contract.md), wait for the receipt,
-  validate identity mode and correlation fields, delete the key file.
-- [ ] Never put the key in argv, process environment, logs, receipt, or
-  artifacts. Test with a fake environment that records every `exec` call.
-- [ ] `client.py`: `session/start` with the benchmark profile,
+- [x] `run()`: key to a mode-`0600` file owned by the task user, `envd`
+  started with `setsid nohup` and the contract variables, receipt polled with
+  a bound (daemon exit before a receipt is a `HarnessSetupError` with the log
+  tail), identity mode checked, key file deleted, then `environments/read`
+  must agree with the receipt (registered source, daemon id, incarnation,
+  `ready`) and yields the registration key id.
+- [x] The key never appears in argv, the daemon's environment, logs, receipt,
+  or artifacts; `tests/test_agent_run.py` scans every recorded `exec` and
+  every artifact for both secrets.
+- [x] `client.py`: `session/start` with the inline config,
   `session/environments/activate` with the receipt's exact `environmentId`,
-  `session/runs/start` with a `submissionId` and the instruction bytes
-  unchanged, poll `session/runs/read` until terminal.
-- [ ] Lightspeed side: define the committed benchmark profile
-  (`harbor-terminal`): terminal-only toolset, no MCP, no skills, no bots, no
-  sub-agents, no browser or web search.
-- [ ] `finally`: cancel an active run, close the session, terminate the
-  sandbox `envd` process group, `environments/close` the ephemeral
-  environment. Cleanup errors never replace the original failure. The Harbor
-  sandbox stays intact for the verifier.
-- [ ] Harbor cancellation and timeout propagate to `session/runs/cancel`.
+  `session/runs/start` with `submissionId = context_id` and the instruction
+  as one unchanged `text` item. Polling uses the bounded `session/read`
+  view (run summary plus usage) and reads `session/runs/read` once at the
+  end, so long runs do not ship their transcript on every poll.
+- [ ] Lightspeed side: commit the benchmark profile (`harbor-terminal`). The
+  adapter builds the equivalent inline config today (`profile_id: inline`):
+  one model route, `features.environments` scoped to the campaign key with
+  `selectionTools: false`, no `mcp`, `web`, `subagents`, or `vfs`,
+  `generation.reasoningEffort` and optional `maxOutputTokens`/`maxTurns`.
+  Named profiles are rejected until the precedence between `profile` and
+  `config` on `session/start` is pinned down.
+- [x] `finally`: `session/runs/cancel` if the run is not terminal,
+  `session/close` (force), terminate the `envd` process group,
+  `environments/close`, delete a leftover key file; each step bounded and
+  recorded in `run.json` under `cleanup`, none of them raises. The sandbox
+  filesystem is untouched.
+- [x] Harbor cancellation and timeout reach `session/runs/cancel` (tested by
+  cancelling the running task). Usage is projected on every poll, so a
+  timeout still leaves token counts in `AgentContext`.
+- [ ] A failed or cancelled Lightspeed run does not raise: the verifier runs
+  on whatever the agent left, like a Codex process that exits unhappily, and
+  `run.json` carries the `runFailed` message. Confirm on a live failure that
+  this is the classification we want.
 - [ ] Concurrency: two or more trials with one campaign key produce distinct
   receipts; an `envd` restart inside one live trial reconnects the same
   ephemeral identity during grace without creating a second environment.
-- [ ] Leak audit helper: `environments/list` filtered by `registrationKeyId`.
+- [ ] Leak audit helper script over `environments/list` filtered by
+  `registrationKeyId` (`LightspeedClient.environments_list` exists).
 - [ ] Network: `agents[].extra_allowed_hosts` for the gateway host on the
   Lightspeed arm only; verify the dataset network policy is otherwise
   unchanged.
@@ -175,27 +214,32 @@ real `envd`, then verified by Harbor in the unchanged sandbox.
 Exit: every toy/smoke trial is diagnosable without querying the live service
 or exposing credentials.
 
-- [ ] Project usage, cost, terminal status, and timings into `AgentContext`
-  (`n_input_tokens`, `n_cache_tokens`, `n_output_tokens`, `cost_usd`,
-  `metadata`). Populate progressively so a timeout still leaves data.
-- [ ] `artifacts.py`: write `/logs/agent/lightspeed/envd.log` and
-  `/logs/artifacts/lightspeed/{registration,run,provenance,trajectory}.json`,
-  bounded and redacted. Test that no artifact contains a registration key,
-  API key, provider key, or authorization header.
+- [x] Usage, status, and timings into `AgentContext` (`n_input_tokens`,
+  `n_cache_tokens`, `n_output_tokens`, `metadata.lightspeed`), populated on
+  every poll. `cost_usd` stays unset: Lightspeed reports tokens, not cost.
+- [x] `artifacts.py`: `envd.log` in the sandbox under `/logs/agent/lightspeed/`;
+  `registration.json`, `run.json`, `provenance.json` on the host under
+  `<trial>/agent/lightspeed/` (deviation from the `/logs/artifacts` path in
+  P149, so they exist even when the sandbox is unreachable). `write_json`
+  refuses any document containing a configured secret or an authorization
+  header. `trajectory.json` is not written yet.
 - [ ] Export raw Lightspeed events from `session/events/read`; add ATIF
   conversion (`harbor.models.trajectories`) only where the mapping is
   faithful, otherwise mark trajectory support unavailable and keep
   `SUPPORTS_ATIF = False`.
-- [ ] Failure taxonomy: dataset/preflight, compute infrastructure, harness
-  setup, agent execution, verification, artifact-only. Map each adapter
-  boundary to one class and record it in `run.json`.
+- [~] Failure taxonomy: `harness_setup`, `agent_execution`, and
+  `artifact_only` are the adapter's classes (`errors.py`) and land in
+  `run.json` and `metadata.lightspeed.failure_class`; dataset/preflight,
+  compute infrastructure, and verification are Harbor's and belong to
+  `preflight.py` and `report.py`.
 - [ ] Infrastructure retry allowlist: only failures that occur before the
   agent can influence the sandbox. Align with Harbor's `RetryConfig`
   exclusion list; never retry a verifier failure, agent timeout, provider
   refusal, gateway error, or environment disconnect.
-- [ ] Secondary measures: model calls, time to first model request and first
-  environment operation, environment tool calls and errors, output
-  truncations, setup/registration/cleanup durations.
+- [~] Secondary measures: registration, run-accepted, and run-terminal
+  timings, reasoning and total tokens, entry and tool-batch counts are
+  recorded. Still missing: model call count, time to first model request and
+  first environment operation, tool errors, output truncations.
 
 ## Slice 4 — Paired Terminal-Bench comparison
 
@@ -241,7 +285,8 @@ to hosted Lightspeed, with complete results and no leaked environments.
 
 Goal: one paired smoke job (Codex versus Lightspeed) on the committed
 allowlist, verified by Harbor, with artifacts, before any full campaign. The
-minimal cut across the slices, in order:
+minimal cut across the slices, in order (steps 2 to 5 landed 2026-09-02;
+`uv run pytest` covers them against the fakes):
 
 1. Lightspeed side (in flight): deploy the `harbor` branch with the
    `environment-gateway` role on a public `wss://` route; mint an
@@ -282,6 +327,43 @@ minimal cut across the slices, in order:
    an aarch64 build made inside the release build image).
 7. Smoke on the committed allowlist: `oracle` first, then the paired job, on
    native `linux/amd64` compute (see the decision below).
+
+### Local run recipe (step 6)
+
+Terminal 1, the local stack from the sibling checkout. The runtime profile
+uses auth mode `single` and runs every role including `environment-gateway`.
+The public base URL must be the TLS terminator below, because the gateway
+derives the data-socket URL from it:
+
+```bash
+cd ../lightspeed
+LIGHTSPEED_PUBLIC_BASE_URL=https://host.docker.internal:18443 ./dev.sh runtime
+```
+
+Terminal 2, in this repository:
+
+```bash
+# TLS in front of 127.0.0.1:18080 for sandboxes; prints two exports.
+eval "$(scripts/local-gateway-tls.sh up)"
+
+# envd for the sandbox architecture (arm64 Docker daemon on Apple silicon).
+eval "$(scripts/build-envd-linux.sh arm64)"
+
+# One ephemeral registration key for this campaign (secret shown once).
+export LIGHTSPEED_API_URL=http://127.0.0.1:18080/rpc
+(cd ../lightspeed && cargo run -q -p cli -- env registration-keys create \
+  --name harbor-local --mode ephemeral --max-active 4 --expires-in-hours 24)
+export LIGHTSPEED_HARBOR_REGISTRATION_KEY=<secret from above>
+export LIGHTSPEED_API_KEY=local   # single-mode gateway ignores it
+
+# Fill the model id in configs/toy.local.yaml, then:
+uv run harbor run -c configs/toy.local.yaml
+```
+
+The oracle trial proves the verifier; the Lightspeed trial proves the chain.
+Inspect `jobs/toy-local/<trial>/agent/lightspeed/{registration,run,provenance}.json`
+and `agent/lightspeed/envd.log`. `scripts/local-gateway-tls.sh down` removes
+the terminator.
 
 ## Open decisions
 

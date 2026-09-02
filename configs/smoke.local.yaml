@@ -1,8 +1,8 @@
 # Paired smoke job on local Docker.
 #
 # Schema: Harbor 0.22.0, harbor.models.job.config.JobConfig.
-# NOT RUNNABLE YET: LightspeedAgent.setup/run are unimplemented
-# (docs/next-steps.md, slice 2). Structure is validated by tests/.
+# Runs once the placeholders are filled and the host settings in .env.example
+# are exported. Structure is validated by tests/.
 #
 # Replace every <placeholder> before a run. Never use `latest` for Harbor,
 # the dataset, the model, or the envd artifact.
@@ -50,7 +50,7 @@ agents:
     n_concurrent: 1
     kwargs:
       lightspeed_provider_id: <lightspeed-provider-id>
-      profile_id: harbor-terminal
+      profile_id: inline
       reasoning_effort: <effort>
     # Only the Lightspeed arm needs egress to the Lightspeed gateway.
     extra_allowed_hosts:
