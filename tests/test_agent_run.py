@@ -145,6 +145,25 @@ async def test_happy_path_end_to_end(tmp_path: Path, host: HostSettings):
     assert provenance["lightspeed"]["serverInfo"] == {"name": "lightspeed", "version": "test"}
     assert provenance["envd"]["artifact"]["sha256"]
 
+    events = _artifact(tmp_path, "events.json")
+    assert events["count"] == 12 and events["complete"] and not events["truncated"]
+    assert events["events"][-1]["kind"]["type"] == "runCompleted"
+    assert run["measures"] == {
+        "model_calls": 2,
+        "turns": 1,
+        "tool_batches": 1,
+        "tool_calls": 1,
+        "tool_errors": 0,
+        "model_time_ms": 3000,
+        "tool_time_ms": 1000,
+        "time_to_first_model_request_ms": 100,
+        "time_to_first_tool_call_ms": 2200,
+        "run_duration_ms": 4400,
+        "terminal_event": "runCompleted",
+    }
+    assert context.metadata["lightspeed"]["measures"]["model_calls"] == 2
+    assert context.metadata["lightspeed"]["events_exported"] == 12
+
 
 async def test_failed_run_is_recorded_and_the_verifier_still_runs(
     tmp_path: Path, host: HostSettings
@@ -258,6 +277,12 @@ async def test_harbor_cancellation_cancels_the_run_and_cleans_up(
     run = _artifact(tmp_path, "run.json")
     assert run["cancelled"] is True
     assert run["cleanup"]["runs/cancel"] == "ok"
+    # The cancel response is the final run view, so the record is complete.
+    assert run["status"] == "cancelled"
+    assert run["entries"] == 1 and run["tool_batches"] == 1
+    assert run["cleanup"]["events/export"] == "ok"
+    assert run["measures"]["terminal_event"] == "runCancelled"
+    assert _artifact(tmp_path, "events.json")["count"] == 12
 
 
 async def test_setup_rejects_an_unexpected_envd_version(tmp_path: Path, host: HostSettings):
@@ -341,3 +366,23 @@ async def test_declared_workdir_wins_over_the_sandbox_default(tmp_path: Path, ho
     start = next(c for c in env.commands() if "LIGHTSPEED_ENVD_CWD" in c)
     assert "LIGHTSPEED_ENVD_CWD=/app" in start
     assert "pwd" not in env.commands()
+
+
+def test_measures_ignore_other_runs_and_unknown_shapes():
+    from lightspeed_harbor.agent import compute_measures
+
+    assert compute_measures([], "run_1")["model_calls"] == 0
+    events = [
+        {"observedAtMs": 10, "kind": {"type": "runStarted", "runId": "run_1"}},
+        {"observedAtMs": 20, "kind": {"type": "turnGenerationRequested", "runId": "run_2"}},
+        {
+            "observedAtMs": 30,
+            "kind": {"type": "toolCallCompleted", "runId": "run_1", "status": "failed"},
+        },
+        {"observedAtMs": "bad", "kind": {"type": "runCompleted", "runId": "run_1"}},
+        {"kind": "not-a-dict"},
+    ]
+    m = compute_measures(events, "run_1")
+    assert m["time_to_first_model_request_ms"] is None
+    assert m["tool_errors"] == 1
+    assert m["terminal_event"] is None

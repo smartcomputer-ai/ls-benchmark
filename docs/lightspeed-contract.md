@@ -89,8 +89,8 @@ receipt), `receipt.json`, `envd.pid`, and `gateway-ca.pem`. The daemon is
 started with `setsid nohup ... &` so its process group can be terminated in
 `finally`; stdout and stderr go to `/logs/agent/lightspeed/envd.log`, which
 Harbor syncs with the agent logs. The adapter's own JSON artifacts
-(`registration.json`, `run.json`, `provenance.json`) are written on the Harbor
-host under `<trial>/agent/lightspeed-adapter/`, so they exist even when the
+(`registration.json`, `run.json`, `provenance.json`, `events.json`) are written on
+the Harbor host under `<trial>/agent/lightspeed-adapter/`, so they exist even when the
 sandbox is unreachable (a separate directory because the sandbox creates
 `lightspeed/` as root on Linux Docker hosts); that is the one deviation from the `/logs/artifacts/lightspeed/`
 paths in P149.

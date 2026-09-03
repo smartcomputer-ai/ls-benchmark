@@ -170,6 +170,98 @@ class FakeLightspeed:
         # Provider errors to report on successive models/list calls (then healthy).
         self.provider_errors: list[str] = []
 
+    def events(self) -> list[dict[str, Any]]:
+        """One scripted run: two model calls around one tool batch, then the terminal
+        event matching the run's final status (12 events, 4.4 s of run time)."""
+        run = self.run_id
+        terminal = self._statuses[-1]
+        kinds: list[tuple[int, dict[str, Any]]] = [
+            (900, {"type": "runAccepted", "runId": run, "source": {"type": "input"}}),
+            (1000, {"type": "runStarted", "runId": run}),
+            (1050, {"type": "turnStarted", "runId": run, "turnId": "turn_1"}),
+            (1100, {"type": "turnGenerationRequested", "runId": run, "turnId": "turn_1"}),
+            (
+                3100,
+                {
+                    "type": "turnGenerationCompleted",
+                    "runId": run,
+                    "turnId": "turn_1",
+                    "status": "completed",
+                    "usage": self.usage,
+                },
+            ),
+            (
+                3200,
+                {
+                    "type": "toolBatchStarted",
+                    "runId": run,
+                    "turnId": "turn_1",
+                    "batchId": "batch_1",
+                    "calls": [],
+                },
+            ),
+            (
+                3200,
+                {
+                    "type": "toolCallStarted",
+                    "runId": run,
+                    "turnId": "turn_1",
+                    "batchId": "batch_1",
+                    "callId": "call_1",
+                },
+            ),
+            (
+                4200,
+                {
+                    "type": "toolCallCompleted",
+                    "runId": run,
+                    "turnId": "turn_1",
+                    "batchId": "batch_1",
+                    "callId": "call_1",
+                    "status": "succeeded",
+                    "effects": [],
+                },
+            ),
+            (
+                4200,
+                {
+                    "type": "toolBatchCompleted",
+                    "runId": run,
+                    "turnId": "turn_1",
+                    "batchId": "batch_1",
+                },
+            ),
+            (4300, {"type": "turnGenerationRequested", "runId": run, "turnId": "turn_1"}),
+            (
+                5300,
+                {
+                    "type": "turnGenerationCompleted",
+                    "runId": run,
+                    "turnId": "turn_1",
+                    "status": "completed",
+                    "usage": self.usage,
+                },
+            ),
+        ]
+        if terminal == "failed":
+            kinds.append(
+                (5400, {"type": "runFailed", "runId": run, "message": self.failure_message})
+            )
+        elif terminal == "cancelled":
+            kinds.append((5400, {"type": "runCancelled", "runId": run}))
+        else:
+            kinds.append((5400, {"type": "runCompleted", "runId": run, "outputRef": "blob_out"}))
+        return [
+            {
+                "cursor": {"seq": i + 1},
+                "sessionId": self.session_id,
+                "observedAtMs": at,
+                "joins": {},
+                "kind": kind,
+            }
+            for i, (at, kind) in enumerate(kinds)
+        ]
+
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
 
@@ -275,21 +367,15 @@ class FakeLightspeed:
         if method == "session/close":
             return {"session": {"id": self.session_id, "status": "closed"}}
         if method == "session/events/read":
+            events = self.events()
+            after = params.get("after")
+            after_seq = after.get("seq") if isinstance(after, dict) else None
+            remaining = [e for e in events if after_seq is None or e["cursor"]["seq"] > after_seq]
+            page = remaining[: params.get("limit") or 500]
             return {
-                "events": [
-                    {
-                        "cursor": {"seq": 1},
-                        "sessionId": self.session_id,
-                        "observedAtMs": 1,
-                        "joins": {},
-                        "kind": {
-                            "type": "runFailed",
-                            "runId": self.run_id,
-                            "message": self.failure_message,
-                        },
-                    }
-                ],
-                "complete": True,
-                "nextCursor": {"seq": 1},
+                "events": page,
+                "complete": len(page) == len(remaining),
+                "nextCursor": {"seq": page[-1]["cursor"]["seq"]} if page else None,
+                "headCursor": {"seq": events[-1]["cursor"]["seq"]} if events else None,
             }
         raise AssertionError(f"unexpected method {method}")

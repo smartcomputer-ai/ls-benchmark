@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import platform as host_platform
 import time
@@ -50,7 +51,10 @@ from lightspeed_harbor.errors import (
 
 AGENT_NAME = "lightspeed"
 _EVENT_PAGE_LIMIT = 500
-_EVENT_MAX_PAGES = 40
+_EVENT_MAX_PAGES = 400
+_EVENT_MAX_BYTES = 8 * 1024 * 1024
+_TOOL_ERROR_STATUSES = frozenset({"failed", "unavailable"})
+_RUN_TERMINAL_KINDS = frozenset({"runCompleted", "runFailed", "runCancelled"})
 _MODEL_LIST_ATTEMPTS = 4
 _MODEL_LIST_BACKOFF_SEC = 2.0
 
@@ -87,6 +91,71 @@ def build_session_config(
     return config
 
 
+def compute_measures(events: list[dict[str, Any]], run_id: str | None) -> dict[str, Any]:
+    """Secondary measures for one run from the raw session events: model calls,
+    turns, tool calls and errors, time to the first model request and first
+    tool call, and model versus tool time. Events of other runs are ignored;
+    unknown shapes are skipped rather than guessed."""
+    run_started: int | None = None
+    gen_requested: dict[str, int] = {}
+    batch_started: dict[str, int] = {}
+    m: dict[str, Any] = {
+        "model_calls": 0,
+        "turns": 0,
+        "tool_batches": 0,
+        "tool_calls": 0,
+        "tool_errors": 0,
+        "model_time_ms": 0,
+        "tool_time_ms": 0,
+        "time_to_first_model_request_ms": None,
+        "time_to_first_tool_call_ms": None,
+        "run_duration_ms": None,
+        "terminal_event": None,
+    }
+    for event in events:
+        kind = event.get("kind") if isinstance(event, dict) else None
+        if not isinstance(kind, dict):
+            continue
+        if run_id and kind.get("runId") not in (None, run_id):
+            continue
+        kind_type = kind.get("type")
+        at = event.get("observedAtMs")
+        if not isinstance(at, int):
+            continue
+        if kind_type == "runStarted":
+            run_started = at
+        elif kind_type == "turnStarted":
+            m["turns"] += 1
+        elif kind_type == "turnGenerationRequested":
+            gen_requested[str(kind.get("turnId"))] = at
+            if run_started is not None and m["time_to_first_model_request_ms"] is None:
+                m["time_to_first_model_request_ms"] = at - run_started
+        elif kind_type == "turnGenerationCompleted":
+            m["model_calls"] += 1
+            started = gen_requested.pop(str(kind.get("turnId")), None)
+            if started is not None:
+                m["model_time_ms"] += max(0, at - started)
+        elif kind_type == "toolBatchStarted":
+            m["tool_batches"] += 1
+            batch_started[str(kind.get("batchId"))] = at
+        elif kind_type == "toolCallStarted":
+            m["tool_calls"] += 1
+            if run_started is not None and m["time_to_first_tool_call_ms"] is None:
+                m["time_to_first_tool_call_ms"] = at - run_started
+        elif kind_type == "toolCallCompleted":
+            if kind.get("status") in _TOOL_ERROR_STATUSES:
+                m["tool_errors"] += 1
+        elif kind_type == "toolBatchCompleted":
+            started = batch_started.pop(str(kind.get("batchId")), None)
+            if started is not None:
+                m["tool_time_ms"] += max(0, at - started)
+        elif kind_type in _RUN_TERMINAL_KINDS:
+            m["terminal_event"] = kind_type
+            if run_started is not None:
+                m["run_duration_ms"] = at - run_started
+    return m
+
+
 @dataclass
 class _RunState:
     """Everything one trial learns, for cleanup ordering and the artifacts."""
@@ -114,6 +183,10 @@ class _RunState:
     metadata: dict[str, str] = field(default_factory=dict)
     instruction_sha256: str | None = None
     instruction_bytes: int | None = None
+    events: list[dict[str, Any]] | None = None
+    events_complete: bool = False
+    events_truncated: bool = False
+    measures: dict[str, Any] = field(default_factory=dict)
 
 
 class LightspeedAgent(BaseAgent):
@@ -224,7 +297,7 @@ class LightspeedAgent(BaseAgent):
             raise
         finally:
             state.finished_at = _utcnow()
-            await self._cleanup(environment, state)
+            await self._cleanup(environment, state, context)
             self._finish_context(context, state)
             self._write_artifacts(state)
 
@@ -291,8 +364,9 @@ class LightspeedAgent(BaseAgent):
 
         state.run_view = await self._wait_for_run(client, state, context)
         state.timings["run_terminal_sec"] = round(time.monotonic() - clock, 3)
+        await self._export_events(client, state)
         if state.status != "completed":
-            message = await self._failure_message(client, state)
+            message = self._failure_message(state)
             state.error = f"lightspeed run {state.status}" + (f": {message}" if message else "")
             state.failure_class = FAILURE_AGENT_EXECUTION
             # The verifier still runs on whatever the agent left behind, exactly as
@@ -478,34 +552,71 @@ class LightspeedAgent(BaseAgent):
         context.n_cache_tokens = usage.get("cachedInputTokens")
         context.n_output_tokens = usage.get("outputTokens")
 
-    async def _failure_message(self, client: LightspeedClient, state: _RunState) -> str | None:
-        """Best-effort: the ``runFailed`` event message for this run."""
-        if not state.session_id or not state.run_id:
-            return None
+    async def _export_events(self, client: LightspeedClient, state: _RunState) -> None:
+        """Page the whole session event log into ``state.events`` (bounded by pages
+        and bytes) and derive the secondary measures. Never raises: an export
+        problem is artifact-only."""
+        if state.events is not None or not state.session_id:
+            return
+        events: list[dict[str, Any]] = []
+        size = 0
         after: int | None = None
+        complete = False
+        truncated = False
         try:
             for _ in range(_EVENT_MAX_PAGES):
                 page = await client.session_events_read(
                     state.session_id, after_seq=after, limit=_EVENT_PAGE_LIMIT
                 )
-                for event in page.get("events") or []:
-                    kind = event.get("kind") or {}
-                    if kind.get("type") == "runFailed" and kind.get("runId") == state.run_id:
-                        return str(kind.get("message") or "")
+                batch = [e for e in (page.get("events") or []) if isinstance(e, dict)]
+                events.extend(batch)
+                size += len(json.dumps(batch))
                 cursor = page.get("nextCursor") or {}
-                if page.get("complete") or "seq" not in cursor:
+                if page.get("complete") or "seq" not in cursor or not batch:
+                    complete = bool(page.get("complete", not batch))
                     break
                 after = int(cursor["seq"])
+                if size >= _EVENT_MAX_BYTES:
+                    truncated = True
+                    break
+            else:
+                truncated = True
         except (LightspeedError, ValueError, TypeError) as exc:
-            self.logger.debug("could not read failure message: %s", exc)
+            self.logger.warning("event export incomplete: %s", exc)
+            truncated = True
+        state.events = events
+        state.events_complete = complete and not truncated
+        state.events_truncated = truncated
+        state.measures = compute_measures(events, state.run_id)
+
+    @staticmethod
+    def _failure_message(state: _RunState) -> str | None:
+        """The ``runFailed`` message for this run, from the exported events."""
+        for event in state.events or []:
+            kind = event.get("kind") or {}
+            if kind.get("type") == "runFailed" and kind.get("runId") == state.run_id:
+                return str(kind.get("message") or "")
         return None
 
     # --- cleanup and artifacts --------------------------------------------
 
-    async def _cleanup(self, environment: BaseEnvironment, state: _RunState) -> None:
+    async def _cleanup(
+        self, environment: BaseEnvironment, state: _RunState, context: AgentContext
+    ) -> None:
         """Bounded, best-effort teardown. Errors are recorded, never raised, so they
         cannot replace the trial's real outcome or touch the sandbox filesystem."""
         client = state.client
+
+        async def cancel_run() -> None:
+            # The cancel response is the final run view: keep its status, usage,
+            # entries, and tool batches so a timed-out trial is recorded fully.
+            assert client and state.session_id and state.run_id
+            view = (await client.session_runs_cancel(state.session_id, state.run_id)).get("run")
+            if isinstance(view, dict):
+                state.run_view = view
+                state.status = view.get("status", state.status)
+                self._project_usage(context, view.get("usage"), state)
+
         steps: list[tuple[str, Any]] = []
         if (
             client
@@ -513,9 +624,9 @@ class LightspeedAgent(BaseAgent):
             and state.run_id
             and state.status not in RUN_TERMINAL_STATUSES
         ):
-            steps.append(
-                ("runs/cancel", lambda: client.session_runs_cancel(state.session_id, state.run_id))
-            )
+            steps.append(("runs/cancel", cancel_run))
+        if client and state.session_id and state.events is None:
+            steps.append(("events/export", lambda: self._export_events(client, state)))
         if client and state.session_id:
             steps.append(
                 ("session/close", lambda: client.session_close(state.session_id, force=True))
@@ -569,6 +680,8 @@ class LightspeedAgent(BaseAgent):
                 "reasoning_tokens": usage.get("reasoningTokens"),
                 "total_tokens": usage.get("totalTokens"),
                 "timings": state.timings,
+                "measures": state.measures,
+                "events_exported": len(state.events) if state.events is not None else None,
                 "cleanup": state.cleanup,
                 "server": server,
                 "envd_version": self._envd_version,
@@ -611,7 +724,16 @@ class LightspeedAgent(BaseAgent):
             "session_config": state.session_config,
             "instruction_sha256": state.instruction_sha256,
             "instruction_bytes": state.instruction_bytes,
+            "measures": state.measures,
             "cleanup": state.cleanup,
+        }
+        events = {
+            "session_id": state.session_id,
+            "run_id": state.run_id,
+            "complete": state.events_complete,
+            "truncated": state.events_truncated,
+            "count": len(state.events or []),
+            "events": state.events or [],
         }
         provenance = {
             "adapter": {"name": AGENT_NAME, "version": __version__},
@@ -634,6 +756,7 @@ class LightspeedAgent(BaseAgent):
             (artifacts.REGISTRATION_JSON, registration),
             (artifacts.RUN_JSON, run),
             (artifacts.PROVENANCE_JSON, provenance),
+            (artifacts.EVENTS_JSON, events),
         ):
             try:
                 artifacts.write_json(directory, name, payload, secrets=secrets)

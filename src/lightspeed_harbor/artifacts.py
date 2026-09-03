@@ -30,6 +30,7 @@ ENVD_LOG: PurePosixPath = _PATHS.agent_dir / SANDBOX_SUBDIR / "envd.log"
 REGISTRATION_JSON = "registration.json"
 RUN_JSON = "run.json"
 PROVENANCE_JSON = "provenance.json"
+EVENTS_JSON = "events.json"  # raw session events; ATIF conversion is a later slice
 
 _HEADER_MARKERS = ("authorization: bearer", '"authorization"')
 

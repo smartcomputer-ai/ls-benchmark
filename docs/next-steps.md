@@ -230,10 +230,13 @@ or exposing credentials.
   Linux Docker hosts). `write_json`
   refuses any document containing a configured secret or an authorization
   header. `trajectory.json` is not written yet.
-- [ ] Export raw Lightspeed events from `session/events/read`; add ATIF
-  conversion (`harbor.models.trajectories`) only where the mapping is
-  faithful, otherwise mark trajectory support unavailable and keep
-  `SUPPORTS_ATIF = False`.
+- [x] Raw Lightspeed events are exported to `events.json` (whole session
+  log, bounded to 400 pages and 8 MiB, `complete`/`truncated` flags), after
+  the run and during cleanup on cancellation. On cancellation the
+  `session/runs/cancel` response is kept as the final run view, so a
+  timed-out trial records its status, usage, entries, and tool batches.
+- [ ] ATIF conversion (`harbor.models.trajectories`) only where the mapping
+  is faithful; until then `SUPPORTS_ATIF = False`.
 - [~] Failure taxonomy: `harness_setup`, `agent_execution`, and
   `artifact_only` are the adapter's classes (`errors.py`) and land in
   `run.json` and `metadata.lightspeed.failure_class`; dataset/preflight,
@@ -243,10 +246,12 @@ or exposing credentials.
   agent can influence the sandbox. Align with Harbor's `RetryConfig`
   exclusion list; never retry a verifier failure, agent timeout, provider
   refusal, gateway error, or environment disconnect.
-- [~] Secondary measures: registration, run-accepted, and run-terminal
-  timings, reasoning and total tokens, entry and tool-batch counts are
-  recorded. Still missing: model call count, time to first model request and
-  first environment operation, tool errors, output truncations.
+- [x] Secondary measures derived from the events (`run.json` and
+  `metadata.lightspeed.measures`): model calls, turns, tool batches, tool
+  calls and errors, model versus tool time, time to first model request and
+  first tool call, run duration, terminal event; plus the adapter's
+  registration and run timings, reasoning and total tokens. Output
+  truncations are not surfaced by the event log.
 
 ## Slice 4 — Paired Terminal-Bench comparison
 
@@ -555,6 +560,17 @@ With the three-task rerun merged (`--supersede`; `fix-git` and
 **58 / 87 = 0.667**, report in `jobs/terminal-bench-lightspeed-2026-09-02-final/`.
 All 89 environments the campaign key admitted are `closed`; the runner has
 no containers left and 121 GB of images cached for the next run.
+
+Root causes of the unsolved tasks, from the session events (2026-09-03):
+three tasks (`pypi-server`, `configure-git-webserver`,
+`install-windows-3.11`) lost the service the agent started because envd
+sweeps a command's process group when the command exits, and four more
+burned their budget polling builds with `sleep` for the same reason. That
+is Lightspeed roadmap item P151 (`../lightspeed/docs/roadmap/p151-exec-leftover-processes.md`);
+`configs/terminal-bench.lightspeed-rerun.yaml` is the pattern for the
+confirmation rerun once it ships. The remaining zero-score tasks are
+instruction misses and wrong answers; the timeouts are task-inherent long
+computations, and leaderboard rules forbid raising the limits.
 
 Two things learned bringing the VM up (both folded into the scripts): the
 `images:` Ubuntu cloud image has no `openssh-server`, and cloud-init leaves
