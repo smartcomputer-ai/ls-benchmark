@@ -90,8 +90,9 @@ started with `setsid nohup ... &` so its process group can be terminated in
 `finally`; stdout and stderr go to `/logs/agent/lightspeed/envd.log`, which
 Harbor syncs with the agent logs. The adapter's own JSON artifacts
 (`registration.json`, `run.json`, `provenance.json`) are written on the Harbor
-host under `<trial>/agent/lightspeed/`, so they exist even when the sandbox is
-unreachable; that is the one deviation from the `/logs/artifacts/lightspeed/`
+host under `<trial>/agent/lightspeed-adapter/`, so they exist even when the
+sandbox is unreachable (a separate directory because the sandbox creates
+`lightspeed/` as root on Linux Docker hosts); that is the one deviation from the `/logs/artifacts/lightspeed/`
 paths in P149.
 
 ## envd artifact
@@ -104,7 +105,13 @@ archive or a bare binary at `LIGHTSPEED_HARBOR_ENVD_RELEASE_URL`, verifies
 `LIGHTSPEED_HARBOR_ENVD_SHA256` against the download, and caches the binary
 under `~/.cache/ls-benchmark/envd/<sha256>/`.
 
-Two facts to keep in mind when choosing the artifact:
+Three facts to keep in mind when choosing the artifact:
+
+- The release archive built from `2093b949` panics on its first TLS
+  connection (rustls has two crypto providers compiled in and no default; see
+  `docs/next-steps.md`, hosted run log). Until envd installs its provider
+  explicitly, build it alone with `scripts/build-envd-linux.sh`, which the
+  runner does from the deployed commit.
 
 - The release builds on `rust:1.97.1-bookworm`, so the binary links against
   glibc 2.36. Terminal-Bench images based on `debian:bullseye` (glibc 2.31)

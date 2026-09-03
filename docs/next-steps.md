@@ -224,8 +224,10 @@ or exposing credentials.
   every poll. `cost_usd` stays unset: Lightspeed reports tokens, not cost.
 - [x] `artifacts.py`: `envd.log` in the sandbox under `/logs/agent/lightspeed/`;
   `registration.json`, `run.json`, `provenance.json` on the host under
-  `<trial>/agent/lightspeed/` (deviation from the `/logs/artifacts` path in
-  P149, so they exist even when the sandbox is unreachable). `write_json`
+  `<trial>/agent/lightspeed-adapter/` (deviation from the `/logs/artifacts`
+  path in P149, so they exist even when the sandbox is unreachable; a
+  separate directory because the sandbox creates `lightspeed/` as root on
+  Linux Docker hosts). `write_json`
   refuses any document containing a configured secret or an authorization
   header. `trajectory.json` is not written yet.
 - [ ] Export raw Lightspeed events from `session/events/read`; add ATIF
@@ -262,10 +264,12 @@ Exit: one command produces a reproducible paired local comparison.
 - [ ] Smoke allowlist covering file editing, long-running commands, process
   control, and output-heavy terminal interaction. Selection is for
   integration coverage, not score.
-- [ ] `scripts/report.py`: read the Harbor job directory plus artifacts;
-  compute successes / eligible trials, success rate by agent, paired
-  task-level difference, and a task-resampled confidence interval (attempts
-  for one task stay together). Never query live state.
+- [x] `scripts/report.py`: reads one or more job directories (later ones
+  can supersede earlier trials of the same task, adapter failure classes can
+  be dropped), computes successes / eligible trials, success rate and
+  outcome classes per agent, token and timing aggregates, and for two agents
+  the paired task-level difference with a task-resampled bootstrap interval.
+  Writes `report.json` and `report.md`; never queries live state.
 - [ ] Audit one local Docker smoke run for equal instructions, users, working
   directories, resources, network, timeouts, and artifacts.
 
@@ -274,9 +278,10 @@ Exit: one command produces a reproducible paired local comparison.
 Exit: Harbor runs from a developer machine while remote task compute connects
 to hosted Lightspeed, with complete results and no leaked environments.
 
-- [ ] Commit `configs/terminal-bench.remote.example.yaml` for one Harbor
-  remote environment provider; only the `environment` section and gateway
-  egress differ from the local config.
+- [x] Remote compute: `configs/terminal-bench.lightspeed.yaml` runs
+  unchanged on the hz02 runner VM (`scripts/hz02-runner.sh`,
+  `scripts/run-remote.sh`); a third-party provider config would differ only
+  in the `environment` block and `extra_allowed_hosts`.
 - [ ] Operator guide: gateway egress, registration-key policy (ephemeral,
   active limit, expiry, rotation), concurrency, provider quota, cleanup.
 - [ ] Lightspeed side, if a second `environment-gateway` replica is ever
@@ -405,7 +410,7 @@ uv run harbor run -c configs/toy.local.yaml
 ```
 
 The oracle trial proves the verifier; the Lightspeed trial proves the chain.
-Inspect `jobs/<job>/<trial>/agent/lightspeed/{registration,run,provenance}.json`
+Inspect `jobs/<job>/<trial>/agent/lightspeed-adapter/{registration,run,provenance}.json`
 and `agent/lightspeed/envd.log`. `scripts/local-gateway-tls.sh down` removes
 the terminator.
 
@@ -492,6 +497,64 @@ release lock, and starts `scripts/run-hosted.sh` detached under
 `.local/runs/<utc>.log`. `fetch` brings `jobs/<job>` back for `report.py`.
 Set `LS_REMOTE_ENV='LS_KEY_MAX_ACTIVE=16'` on `start` to size the campaign
 registration key above the job's concurrency.
+
+Install-only sweep, 2026-09-02: 89 images in about 8 minutes at
+concurrency 12; 87 accept the release `envd`, `qemu-startup` and
+`qemu-alpine-ssh` (`debian:bullseye`, glibc 2.31) fail `envd --version` and
+are the predeclared `exclude_task_names` in
+`configs/terminal-bench.lightspeed.yaml`. Images take 118 GB on the VM.
+
+Release envd defect, 2026-09-02: the x86_64 binary from the release bundle
+panics on its first TLS connection (`Could not automatically determine the
+process-level CryptoProvider`): the release is one workspace build, and
+feature unification compiles both rustls providers (`ring` via
+`object_store`, `aws-lc-rs` via envd's own deps), so rustls has no default
+and tokio-tungstenite's default connector panics. The first full-run attempt
+lost 48 trials to it as `harness_setup` before it was stopped (no
+environment registered, nothing leaked). Workaround: build envd alone
+(`cargo build -p environment-daemon`, which only sees aws-lc-rs) with
+`scripts/build-envd-linux.sh amd64` on the runner from the deployed commit.
+Fix for Lightspeed: install the provider once in `envd`'s `main` (patch in
+the session notes); after that the release artifact can be used again.
+
+Full run, started 2026-09-02 21:59 UTC as
+`terminal-bench-lightspeed-hosted-20260902-215958` (87 tasks, concurrency
+12, `gpt-5.6-terra`, effort `high`). Adapter bug found in it: the start
+command hard-coded `/app` as the working directory when a task declares
+none; `prove-plus-comm` (`WORKDIR /workspace`) failed setup, and `fix-git`
+and `sanitize-git-repo` (`WORKDIR` below `/app`) started one directory too
+high. Fixed by asking the sandbox for `pwd` when no `workdir` is declared,
+which is also where Codex starts. The three tasks are rerun after the job
+and merged with `scripts/report.py --job-dir <job> --job-dir <rerun>
+--drop-failure-class harness_setup`.
+
+Result of the full run (job `terminal-bench-lightspeed-hosted-20260902-215958`,
+report in its `report.md`), before the three-task rerun is merged:
+
+| measure | value |
+|---|---|
+| trials / solved / rate | 87 / 57 / 0.655 |
+| outcomes | success 57, verification 22, agent timeout 6, verifier timeout 1, harness setup 1 |
+| input / output tokens, total | 53.1 M / 0.74 M |
+| run time per trial, mean / max | 247 s / 1556 s |
+| registration per trial, mean | 1.6 s |
+| wall time, 12 concurrent | 76 min |
+| environments under the campaign key | 86, all `closed` |
+
+Agent timeouts are task-declared limits (900 s to 3600 s) reached by
+`caffe-cifar-10`, `extract-moves-from-video`, `gcode-to-text`,
+`make-doom-for-mips`, `sanitize-git-repo`, `train-fasttext`, `tune-mjcf`;
+Harbor's cancellation reached `session/runs/cancel` and every cleanup step
+reported ok. `torch-pipeline-parallelism` hit the verifier's own 900 s
+limit after the agent finished; the oracle sweep decides whether that is a
+dataset exclusion. The 22 verification failures are ordinary wrong answers.
+This is a single-attempt engineering pass, not a number to quote.
+
+With the three-task rerun merged (`--supersede`; `fix-git` and
+`prove-plus-comm` solved, `sanitize-git-repo` not), the final figure is
+**58 / 87 = 0.667**, report in `jobs/terminal-bench-lightspeed-2026-09-02-final/`.
+All 89 environments the campaign key admitted are `closed`; the runner has
+no containers left and 121 GB of images cached for the next run.
 
 Two things learned bringing the VM up (both folded into the scripts): the
 `images:` Ubuntu cloud image has no `openssh-server`, and cloud-init leaves

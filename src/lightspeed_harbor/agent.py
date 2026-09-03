@@ -49,7 +49,6 @@ from lightspeed_harbor.errors import (
 )
 
 AGENT_NAME = "lightspeed"
-DEFAULT_WORKDIR = "/app"
 _EVENT_PAGE_LIMIT = 500
 _EVENT_MAX_PAGES = 40
 _MODEL_LIST_ATTEMPTS = 4
@@ -245,7 +244,7 @@ class LightspeedAgent(BaseAgent):
         command = envd.start_command(
             self.paths,
             gateway_url=self.host.gateway_url,
-            cwd=self._workdir(environment),
+            cwd=await self._workdir(environment),
             metadata=state.metadata,
             display_name=getattr(self, "session_id", None),
             with_ca_file=self.host.envd_ca_file is not None,
@@ -308,9 +307,23 @@ class LightspeedAgent(BaseAgent):
         return LightspeedClient(self.host.api_url, self.host.api_key, universe=self.host.universe)
 
     @staticmethod
-    def _workdir(environment: BaseEnvironment) -> str:
+    async def _workdir(environment: BaseEnvironment) -> str:
+        """The directory Harbor runs agent commands in: the task's explicit
+        ``workdir``, otherwise whatever the sandbox starts commands in (its
+        image ``WORKDIR``), which is also where the Codex arm begins."""
         config = getattr(environment, "task_env_config", None)
-        return getattr(config, "workdir", None) or DEFAULT_WORKDIR
+        explicit = getattr(config, "workdir", None)
+        if explicit:
+            return str(explicit)
+        result = await environment.exec("pwd", timeout_sec=30)
+        cwd = (
+            (result.stdout or "").strip().splitlines()[-1] if (result.stdout or "").strip() else ""
+        )
+        if result.return_code != 0 or not cwd.startswith("/"):
+            raise HarnessSetupError(
+                f"could not determine the sandbox working directory: {result.stderr!r}"
+            )
+        return cwd
 
     @staticmethod
     def _validate_environment(view: dict[str, Any], receipt: envd.Receipt) -> str:

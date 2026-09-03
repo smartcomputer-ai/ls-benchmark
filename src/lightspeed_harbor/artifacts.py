@@ -1,9 +1,12 @@
 """Per-trial artifact export and redaction.
 
 Artifacts are written on the Harbor host under the agent's ``logs_dir``
-(``<trial>/agent/lightspeed/``), so they exist even when the sandbox is
-unreachable. The daemon log is the one file written inside the sandbox
+(``<trial>/agent/lightspeed-adapter/``), so they exist even when the sandbox
+is unreachable. The daemon log is the one file written inside the sandbox
 (``/logs/agent/lightspeed/envd.log``); Harbor syncs it with the agent logs.
+The two directories are deliberately different: on a Linux Docker host the
+sandbox creates ``lightspeed/`` as root inside the bind-mounted logs
+directory, and the host-side process could not write into it.
 
 No artifact may contain a registration key, a Lightspeed API key, a
 model-provider key, or an authorization header; ``write_json`` refuses to
@@ -21,8 +24,9 @@ from harbor.models.trial.paths import EnvironmentPaths
 
 _PATHS = EnvironmentPaths()
 
-ARTIFACT_SUBDIR = "lightspeed"
-ENVD_LOG: PurePosixPath = _PATHS.agent_dir / ARTIFACT_SUBDIR / "envd.log"
+SANDBOX_SUBDIR = "lightspeed"  # inside the sandbox, created by the task user
+ARTIFACT_SUBDIR = "lightspeed-adapter"  # on the Harbor host, created by the adapter
+ENVD_LOG: PurePosixPath = _PATHS.agent_dir / SANDBOX_SUBDIR / "envd.log"
 REGISTRATION_JSON = "registration.json"
 RUN_JSON = "run.json"
 PROVENANCE_JSON = "provenance.json"

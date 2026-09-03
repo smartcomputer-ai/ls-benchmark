@@ -38,7 +38,8 @@ class FakeExecResult:
 @dataclass
 class FakeEnvironment:
     default_user: str | int | None = "agent"
-    workdir: str = "/app"
+    workdir: str | None = "/app"  # task.toml [environment].workdir; None = image default
+    image_workdir: str = "/workspace"  # what `pwd` answers when no workdir is declared
     uname: str = "x86_64"
     version_output: str = "lightspeed-envd 0.1.0 (deadbeef)"
     receipt: dict[str, Any] | None = field(default_factory=lambda: dict(RECEIPT))
@@ -68,6 +69,8 @@ class FakeEnvironment:
         self.calls.append({"command": command, "cwd": cwd, "env": env, "user": user})
         if command == "uname -m":
             return FakeExecResult(0, self.uname + "\n")
+        if command == "pwd":
+            return FakeExecResult(0, self.image_workdir + "\n")
         if command.endswith("--version"):
             return FakeExecResult(0, self.version_output + "\n")
         if "nohup" in command and "LIGHTSPEED_ENVD_GATEWAY_URL" in command:

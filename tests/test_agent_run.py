@@ -62,7 +62,7 @@ def make_agent(
 
 
 def _artifact(tmp_path: Path, name: str) -> dict:
-    return json.loads((tmp_path / "agent" / "lightspeed" / name).read_text())
+    return json.loads((tmp_path / "agent" / "lightspeed-adapter" / name).read_text())
 
 
 async def test_happy_path_end_to_end(tmp_path: Path, host: HostSettings):
@@ -131,7 +131,7 @@ async def test_happy_path_end_to_end(tmp_path: Path, host: HostSettings):
     assert "LIGHTSPEED_ENVD_REGISTRATION_KEY_FILE" in joined
 
     for name in ("registration.json", "run.json", "provenance.json"):
-        text = (tmp_path / "agent" / "lightspeed" / name).read_text()
+        text = (tmp_path / "agent" / "lightspeed-adapter" / name).read_text()
         assert REGISTRATION_KEY not in text and API_KEY not in text
     run = _artifact(tmp_path, "run.json")
     assert run["status"] == "completed"
@@ -316,3 +316,28 @@ async def test_persistent_model_catalog_error_fails_closed(
         await agent.run(INSTRUCTION, env, AgentContext())
     assert fake.methods().count("models/list") == agent_module._MODEL_LIST_ATTEMPTS
     assert "session/start" not in fake.methods()
+
+
+async def test_working_directory_comes_from_the_sandbox_when_undeclared(
+    tmp_path: Path, host: HostSettings
+):
+    fake = FakeLightspeed(run_statuses=("completed",))
+    env = FakeEnvironment(workdir=None, image_workdir="/root/project")
+    agent = make_agent(tmp_path, host, fake)
+    await agent.setup(env)
+    await agent.run(INSTRUCTION, env, AgentContext())
+    start = next(c for c in env.commands() if "LIGHTSPEED_ENVD_CWD" in c)
+    assert "LIGHTSPEED_ENVD_CWD=/root/project" in start
+    assert "cd /root/project" in start
+    assert "pwd" in env.commands()
+
+
+async def test_declared_workdir_wins_over_the_sandbox_default(tmp_path: Path, host: HostSettings):
+    fake = FakeLightspeed(run_statuses=("completed",))
+    env = FakeEnvironment(workdir="/app", image_workdir="/somewhere/else")
+    agent = make_agent(tmp_path, host, fake)
+    await agent.setup(env)
+    await agent.run(INSTRUCTION, env, AgentContext())
+    start = next(c for c in env.commands() if "LIGHTSPEED_ENVD_CWD" in c)
+    assert "LIGHTSPEED_ENVD_CWD=/app" in start
+    assert "pwd" not in env.commands()
