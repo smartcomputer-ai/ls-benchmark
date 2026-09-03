@@ -53,3 +53,8 @@ agents:
       profile_id: inline
       api_kind: openai:responses
       reasoning_effort: high
+      # Parity note: Codex ships its own system prompt describing its tools;
+      # this is Lightspeed's equivalent for its tool surface (no task
+      # content). Both arms therefore run with their harness's own prompt.
+      jobs: true
+      instructions: harbor-terminal

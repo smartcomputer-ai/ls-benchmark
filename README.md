@@ -19,10 +19,13 @@ Harbor job (laptop or CI runner)
 └── LightspeedAgent (this repo)     runs in Harbor's orchestrator process
       ├── uploads and starts lightspeed-envd inside the Harbor sandbox
       ├── envd registers outbound to the hosted Lightspeed gateway
-      ├── starts a Lightspeed session, activates that exact environment
+      ├── starts a Lightspeed session (process + job tools, the harness prompt
+      │   from src/lightspeed_harbor/prompts/ as base instructions) and
+      │   activates that exact environment
       ├── starts one run with the unmodified task instruction
-      └── waits, exports artifacts, disconnects envd
-Harbor then runs the verifier in the same sandbox and destroys it.
+      └── waits, exports artifacts, leaves envd and the environment alive
+Harbor then runs the verifier in the same sandbox and destroys it; the
+registration key's ephemeral grace closes the environment afterwards.
 ```
 
 Lightspeed enters at Harbor's agent boundary as an external `BaseAgent`. It

@@ -43,3 +43,11 @@ agents:
       profile_id: inline
       api_kind: openai:responses
       reasoning_effort: high
+      # Durable job tools (job_run, job_submit, await, ...) next to the
+      # process tools, and the harness prompt that describes both. The
+      # prompt is src/lightspeed_harbor/prompts/harbor-terminal.md; a file
+      # path or `none` here swaps or drops it. Both are the defaults, spelled
+      # out because they define the campaign (the prompt's sha256 is in
+      # provenance.json).
+      jobs: true
+      instructions: harbor-terminal

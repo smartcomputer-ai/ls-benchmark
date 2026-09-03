@@ -9,7 +9,7 @@
 #   scripts/run-remote.sh status                     # running job, log tail, trial counts
 #   scripts/run-remote.sh log [lines]                # tail of the newest run log
 #   scripts/run-remote.sh fetch [job-name]           # rsync jobs/<job> back into jobs/
-#   scripts/run-remote.sh stop                       # SIGINT the running harbor
+#   scripts/run-remote.sh stop                       # SIGINT, then SIGTERM, the running harbor; remove leftover sandboxes
 #   scripts/run-remote.sh ssh [cmd...]               # shell on the VM
 #
 # The VM needs only https://ls.bot: the adapter downloads the deployment's
@@ -59,7 +59,10 @@ case "${1:-status}" in
     ts="$(date -u +%Y%m%d-%H%M%S)"
     printf -v quoted ' %q' "$@"
     # `cd` and `export` run in the login shell; only the runner is backgrounded.
-    rssh "cd '$REMOTE_DIR' || exit 1; export PATH=\"\$HOME/.local/bin:\$PATH\" LS_SANDBOX_ARCH=amd64 ${LS_REMOTE_ENV:-}; \
+    # `set -m`: without job control a non-interactive shell starts `&` jobs
+    # with SIGINT ignored, and Harbor inherits that, so `stop` could not
+    # interrupt it (2026-09-03).
+    rssh "cd '$REMOTE_DIR' || exit 1; export PATH=\"\$HOME/.local/bin:\$PATH\" LS_SANDBOX_ARCH=amd64 ${LS_REMOTE_ENV:-}; set -m; \
       nohup setsid scripts/run-hosted.sh '$config'$quoted > '$RUN_DIR/$ts.log' 2>&1 < /dev/null & \
       echo \$! > '$RUN_DIR/$ts.pid'; echo started run $ts pid \$(cat '$RUN_DIR/$ts.pid')"
     ;;
@@ -81,7 +84,18 @@ case "${1:-status}" in
     log "fetched jobs/$job"
     ;;
   stop)
-    rssh "pkill -INT -f '[h]arbor run' && echo 'sent SIGINT to harbor' || echo 'no harbor run active'"
+    # SIGINT lets Harbor cancel trials and the adapter cancel its runs; after
+    # LS_STOP_GRACE_SEC (60) SIGTERM ends it, and any sandbox Harbor left
+    # behind is removed. Sessions whose trial was cut off stay open on the
+    # Lightspeed side until their retention runs out; close them with
+    # session/close if they matter.
+    rssh "if ! pkill -INT -f '[h]arbor run'; then echo 'no harbor run active'; else \
+      echo 'sent SIGINT to harbor'; \
+      for i in \$(seq 1 ${LS_STOP_GRACE_SEC:-60}); do pgrep -f '[h]arbor run' >/dev/null || break; sleep 1; done; \
+      if pgrep -f '[h]arbor run' >/dev/null; then pkill -TERM -f '[h]arbor run'; sleep 3; echo 'sent SIGTERM to harbor'; fi; \
+      pgrep -f '[h]arbor run' >/dev/null && echo 'harbor still running' || echo 'harbor stopped'; fi; \
+      left=\$(docker ps -q); if [ -n \"\$left\" ]; then docker rm -f \$left >/dev/null && echo \"removed \$(echo \$left | wc -w | tr -d ' ') leftover container(s)\"; fi; \
+      docker network prune -f >/dev/null 2>&1 || true"
     ;;
   ssh)
     shift

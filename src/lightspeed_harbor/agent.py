@@ -34,12 +34,12 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
 import harbor
 from harbor.agents.base import BaseAgent
-from importlib import resources
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 

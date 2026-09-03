@@ -67,7 +67,7 @@ Methods the adapter calls, with the required parameters:
 | Method | Required params | Use |
 |---|---|---|
 | `initialize` | none | Protocol version and server identity for provenance. |
-| `session/start` | none (`sessionId`, `displayName`, `profile`, `config` optional) | Create the trial session with the benchmark profile or explicit config. |
+| `session/start` | none (`sessionId`, `displayName`, `profile`, `config`, `metadata`, `deleteAfterCloseMs` optional) | Create the trial session. With a harness prompt the adapter sends `profile: {kind: inline, profile: {config, instructions: {type: text, text}}}`; with `instructions: none` it sends the bare `config`. |
 | `session/environments/activate` | `sessionId`, `environmentId` | Attach the receipt's exact environment. Session must be idle. |
 | `session/runs/start` | `sessionId`, `source` (`submissionId` optional, use it) | Start the run with the instruction bytes unchanged. Returns on acceptance, not completion. |
 | `session/runs/read`, `session/events/read` | per schema | Poll for terminal status; export events. |
@@ -134,6 +134,21 @@ closed before a model call rather than at registration.
   Their stdio stays envd's pipes, so the adapter keeps envd and the
   registered environment alive through Harbor's verifier and lets the
   ephemeral grace close the environment after the sandbox is destroyed.
+- Under `apiKind: openai:responses` the model sees the Codex-shaped surface:
+  `exec_command {cmd, workdir, tty, yield_time_ms (10 s default, 250 ms to
+  30 min), max_output_tokens, login}` returns output or a `session_id`, and
+  `write_stdin {session_id, chars, yield_time_ms}` polls (60 s default, up
+  to 30 min) or writes. Nothing is killed at a yield.
+- `features.environments.jobs: true` (the adapter's default, `jobs: false`
+  turns it off) adds `job_run {argv, cwd, env, stdin, timeout_ms (30 min
+  default, 60 min max)}`, which waits for the job, `job_submit`, which
+  returns promises, `job_read`, and the promise tools `await`, `cancel`,
+  `detach`. envd runs jobs itself, so they are available in every sandbox.
+- The harness prompt (`src/lightspeed_harbor/prompts/harbor-terminal.md`,
+  kwarg `instructions`) is the inline profile's `instructions`, i.e. the
+  session's base instructions. It describes the tool surface and asks for
+  verification; it never contains task content. Its source and SHA-256 are
+  recorded in `provenance.json`.
 
 ## envd artifact
 

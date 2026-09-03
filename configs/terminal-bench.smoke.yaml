@@ -1,0 +1,46 @@
+# End-to-end smoke of the adapter on the hz02 runner before a full campaign:
+# a handful of quick Terminal-Bench 2.0 tasks, same model, effort, and policy
+# as configs/terminal-bench.lightspeed.yaml. Not a score; a check that the
+# whole path (discovery envd, inline profile with the harness prompt and job
+# tools, keep-alive through the verifier, artifacts, leak audit) works.
+#
+# Task choice (2026-09-03): four tasks the first full run solved in under a
+# minute of agent time (regex-log, openssl-selfsigned-cert, sqlite-db-truncate,
+# kv-store-grpc, whose verifier talks to a server the agent leaves running)
+# plus pypi-server, which the agent finished in 44 s twice and lost only to
+# the pre-verification teardown; it is the cheapest check that the keep-alive
+# change works.
+
+job_name: terminal-bench-smoke
+jobs_dir: jobs
+n_attempts: 1
+n_concurrent_trials: 5
+
+retry:
+  max_retries: 0
+
+environment:
+  type: docker
+  delete: true
+
+datasets:
+  - name: terminal-bench
+    version: "2.0"
+    task_names:
+      - regex-log
+      - openssl-selfsigned-cert
+      - sqlite-db-truncate
+      - kv-store-grpc
+      - pypi-server
+
+agents:
+  - import_path: lightspeed_harbor.agent:LightspeedAgent
+    model_name: openai/gpt-5.6-terra
+    n_concurrent: 5
+    kwargs:
+      lightspeed_provider_id: openai
+      profile_id: inline
+      api_kind: openai:responses
+      reasoning_effort: high
+      jobs: true
+      instructions: harbor-terminal

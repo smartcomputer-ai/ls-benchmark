@@ -595,6 +595,45 @@ plus that tail (`ensure_registration_key` re-mints when the stored key is
 smaller). `keep_environment_for_verifier: false` restores the old teardown.
 This is the documented deviation from P149's "explicit close in finally".
 
+Harness prompt and jobs (2026-09-03, before the second full run): every
+session now enables `features.environments.jobs` and carries a base prompt
+as the inline profile's `instructions`. The prompt lives in
+`src/lightspeed_harbor/prompts/harbor-terminal.md` (kwarg `instructions`:
+a bundled name, a file path, or `none`; `jobs: false` drops the job tools).
+It explains the tool surface the model actually sees under
+`openai:responses` (`exec_command`/`write_stdin` yields, `job_run`,
+`job_submit`/`await`, leftover processes surviving their command), tells
+the model not to poll with `sleep` and to leave required services running,
+and asks it to re-read the task and verify before finishing. It has no task
+content and no verifier knowledge; it plays the role Codex's built-in
+system prompt plays for the Codex arm, so the paired run compares two
+harnesses that each describe their own tools. The prompt's source and
+SHA-256 go into `provenance.json`; a change to it is a new campaign.
+Measured effects to look for in the rerun: fewer `sleep_commands`, fewer
+timeouts on the build-heavy tasks, and the three service tasks solved.
+
+Smoke of that contract on the runner (2026-09-03,
+`configs/terminal-bench.smoke.yaml`, job
+`terminal-bench-smoke-hosted-20260903-202152`): 5/5 solved in 20 to 86 s of
+agent time (regex-log, openssl-selfsigned-cert, sqlite-db-truncate,
+kv-store-grpc, and pypi-server, which had failed twice only to the
+pre-verification teardown). Every trial shows `jobs: true` in its session
+config, `bundled:harbor-terminal` in provenance, and the two cleanup steps
+skipped; the leak audit afterwards found all five environments and sessions
+closed and no containers left. The model used `job_run` twice and set
+`yield_time_ms` to 180 s on four commands, so it reads the prompt. The
+second 7-task rerun (job `…-rerun-hosted-20260903-193618`, old teardown,
+no prompt) solved fix-ocaml-gc and mcmc-sampling-stan, lost the three
+service tasks to the teardown again, and turned make-doom-for-mips from a
+timeout into a wrong answer (2 of 3 tests pass); train-fasttext was aborted
+for the full run.
+
+`run-remote.sh stop` learned the hard way that a non-interactive shell
+starts `&` jobs with SIGINT ignored, so Harbor never saw the signal; `start`
+now sets `set -m` before backgrounding and `stop` escalates to SIGTERM after
+60 s and removes leftover sandboxes. A cut-off trial's session stays open on
+the Lightspeed side; `session/close {force: true}` ends it.
+
 Root causes of the unsolved tasks, from the session events (2026-09-03):
 three tasks (`pypi-server`, `configure-git-webserver`,
 `install-windows-3.11`) lost the service the agent started because envd

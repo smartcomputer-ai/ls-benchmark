@@ -104,17 +104,25 @@ async def test_happy_path_end_to_end(tmp_path: Path, host: HostSettings):
     assert start["source"]["items"] == [{"type": "text", "text": INSTRUCTION}]
     assert start["submissionId"] == str(agent.context_id)
 
-    config = fake.params("session/start")[0]["config"]
+    # The harness prompt rides in an inline profile, so the config is the
+    # profile document's config and no bare `config` is sent.
+    session_start = fake.params("session/start")[0]
+    assert "config" not in session_start
+    profile = session_start["profile"]
+    assert profile["kind"] == "inline"
+    assert profile["profile"]["instructions"]["type"] == "text"
+    assert profile["profile"]["instructions"]["text"].startswith("# Working in this environment")
+    config = profile["profile"]["config"]
     assert config["model"] == {
         "providerId": "openai",
         "model": "model-snapshot",
         "apiKind": "openai:responses",
     }
     assert config["features"] == {
-        "environments": {"selectionTools": False, "registrationKeys": ["key_1"]}
+        "environments": {"selectionTools": False, "jobs": True, "registrationKeys": ["key_1"]}
     }
     assert config["generation"] == {"reasoningEffort": "high"}
-    assert fake.params("session/start")[0]["displayName"] == agent.session_id
+    assert session_start["displayName"] == agent.session_id
     assert all(header == f"Bearer {API_KEY}" for header in fake.auth_headers)
 
     assert (context.n_input_tokens, context.n_cache_tokens, context.n_output_tokens) == (
@@ -575,3 +583,45 @@ async def test_opting_out_tears_the_environment_down_after_the_run(
     await agent.run(INSTRUCTION, env, AgentContext())
     assert env.stopped
     assert fake.methods()[-2:] == ["session/close", "environments/close"]
+
+
+async def test_no_instructions_sends_a_bare_config_without_jobs(tmp_path: Path, host: HostSettings):
+    fake = FakeLightspeed(run_statuses=("completed",))
+    env = FakeEnvironment()
+    agent = make_agent(tmp_path, host, fake, instructions="none", jobs=False)
+    await agent.setup(env)
+    await agent.run(INSTRUCTION, env, AgentContext())
+    start = fake.params("session/start")[0]
+    assert "profile" not in start
+    assert start["config"]["features"]["environments"] == {
+        "selectionTools": False,
+        "jobs": False,
+        "registrationKeys": ["key_1"],
+    }
+    assert _artifact(tmp_path, "provenance.json")["instructions"] is None
+
+
+async def test_instructions_come_from_a_file_and_are_recorded(tmp_path: Path, host: HostSettings):
+    import hashlib
+
+    prompt = tmp_path / "custom.md"
+    prompt.write_text("Use the tools well.\n")
+    fake = FakeLightspeed(run_statuses=("completed",))
+    env = FakeEnvironment()
+    agent = make_agent(tmp_path, host, fake, instructions=str(prompt))
+    await agent.setup(env)
+    await agent.run(INSTRUCTION, env, AgentContext())
+    document = fake.params("session/start")[0]["profile"]["profile"]
+    assert document["instructions"] == {"type": "text", "text": "Use the tools well.\n"}
+    record = _artifact(tmp_path, "provenance.json")["instructions"]
+    assert record["source"] == str(prompt)
+    assert record["sha256"] == hashlib.sha256(b"Use the tools well.\n").hexdigest()
+    assert record["bytes"] == len(b"Use the tools well.\n")
+    # The prompt text itself is not the task, so the run record must not
+    # confuse the two: the instruction bytes are the task's alone.
+    assert _artifact(tmp_path, "run.json")["instruction_bytes"] == len(INSTRUCTION.encode())
+
+
+def test_unknown_instructions_fail_at_construction(tmp_path: Path, host: HostSettings):
+    with pytest.raises(HarnessSetupError, match="neither a bundled prompt nor a file"):
+        make_agent(tmp_path, host, FakeLightspeed(), instructions="no-such-prompt")

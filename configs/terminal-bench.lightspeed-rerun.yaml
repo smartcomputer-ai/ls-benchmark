@@ -37,3 +37,5 @@ agents:
       profile_id: inline
       api_kind: openai:responses
       reasoning_effort: high
+      jobs: true
+      instructions: harbor-terminal
