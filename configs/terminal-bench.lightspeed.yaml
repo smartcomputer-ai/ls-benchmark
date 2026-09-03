@@ -28,13 +28,11 @@ environment:
 datasets:
   - name: terminal-bench
     version: "2.0"
-    # Predeclared exclusions from the 2026-09-02 install-only sweep on the
-    # hz02 runner (89 images, envd --version as the task user): both
-    # debian:bullseye images lack glibc 2.32+ for the release envd. They
-    # count as excluded for every arm; a musl-built envd would restore them.
-    exclude_task_names:
-      - qemu-startup
-      - qemu-alpine-ssh
+    # No predeclared exclusions. The 2026-09-02 install-only sweep on the
+    # hz02 runner (89 images, envd --version as the task user) excluded the
+    # two debian:bullseye images for lacking glibc 2.32+; the release envd is
+    # now a static musl binary and runs there too.
+    exclude_task_names: []
 
 agents:
   - import_path: lightspeed_harbor.agent:LightspeedAgent

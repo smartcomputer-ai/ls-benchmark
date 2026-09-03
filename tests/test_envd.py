@@ -95,26 +95,26 @@ async def test_local_artifact_digest_is_computed_and_checked(tmp_path: Path):
     binary.write_bytes(b"#!/bin/sh\necho envd\n")
     digest = sha256_file(binary)
     artifact = await resolve_artifact(
-        _host(tmp_path, envd_path=binary), target="x86_64-unknown-linux-gnu"
+        _host(tmp_path, envd_path=binary), target="x86_64-unknown-linux-musl"
     )
     assert artifact.sha256 == digest
     assert artifact.source == "local"
     with pytest.raises(HarnessSetupError, match="SHA-256"):
         await resolve_artifact(
             _host(tmp_path, envd_path=binary, envd_sha256="0" * 64),
-            target="x86_64-unknown-linux-gnu",
+            target="x86_64-unknown-linux-musl",
         )
 
 
 async def test_missing_local_artifact_fails(tmp_path: Path):
     with pytest.raises(HarnessSetupError, match="not found"):
         await resolve_artifact(
-            _host(tmp_path, envd_path=tmp_path / "nope"), target="x86_64-unknown-linux-gnu"
+            _host(tmp_path, envd_path=tmp_path / "nope"), target="x86_64-unknown-linux-musl"
         )
 
 
 def test_release_archive_extracts_single_binary(tmp_path: Path):
-    archive = tmp_path / "lightspeed-envd-0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+    archive = tmp_path / "lightspeed-envd-0.1.0-x86_64-unknown-linux-musl.tar.gz"
     with tarfile.open(archive, "w:gz") as tar:
         data = b"ELF-envd"
         info = tarfile.TarInfo("lightspeed-envd")

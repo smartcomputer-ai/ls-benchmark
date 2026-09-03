@@ -40,8 +40,11 @@ from lightspeed_harbor.errors import HarnessSetupError
 ENVD_BINARY_NAME = "lightspeed-envd"
 
 # Harbor platform string -> Rust target triple of the artifact to upload.
+# amd64 is the static musl build the Lightspeed release publishes, which runs
+# on any image regardless of its glibc; arm64 is only built locally
+# (scripts/build-envd-linux.sh) for Apple silicon Docker daemons.
 SUPPORTED_TARGETS: Mapping[str, str] = {
-    "linux/amd64": "x86_64-unknown-linux-gnu",
+    "linux/amd64": "x86_64-unknown-linux-musl",
     "linux/arm64": "aarch64-unknown-linux-gnu",
 }
 

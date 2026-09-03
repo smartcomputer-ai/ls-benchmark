@@ -31,7 +31,7 @@ require_gateway() {
 envd_target() {
   case "$1" in
     arm64|aarch64) ARCH=arm64; TARGET=aarch64-unknown-linux-gnu ;;
-    amd64|x86_64) ARCH=amd64; TARGET=x86_64-unknown-linux-gnu ;;
+    amd64|x86_64) ARCH=amd64; TARGET=x86_64-unknown-linux-musl ;;
     *) log "unknown sandbox architecture: $1"; return 2 ;;
   esac
 }

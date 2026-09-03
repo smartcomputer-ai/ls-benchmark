@@ -98,29 +98,28 @@ paths in P149.
 ## envd artifact
 
 The binary is built from `crates/environment-daemon` as `lightspeed-envd`.
-The release pipeline (`scripts/release/build-dist.sh`) packages it as
-`lightspeed-envd-<version>-x86_64-unknown-linux-gnu.tar.gz` (one member,
-`lightspeed-envd`) plus a checksum file. The adapter accepts either that
-archive or a bare binary at `LIGHTSPEED_HARBOR_ENVD_RELEASE_URL`, verifies
-`LIGHTSPEED_HARBOR_ENVD_SHA256` against the download, and caches the binary
-under `~/.cache/ls-benchmark/envd/<sha256>/`.
+The release pipeline (`scripts/release/build-dist.sh`) publishes it as a
+static musl binary, `lightspeed-envd-<version>-x86_64-unknown-linux-musl.tar.gz`
+(one member, `lightspeed-envd`), and lists it with its sha256 in the bundle's
+`envd.json` discovery document, which a deployment serves at
+`/.well-known/lightspeed-envd` next to the archive. The adapter accepts
+either that archive or a bare binary at `LIGHTSPEED_HARBOR_ENVD_RELEASE_URL`,
+verifies `LIGHTSPEED_HARBOR_ENVD_SHA256` against the download, and caches the
+binary under `~/.cache/ls-benchmark/envd/<sha256>/`.
 
-Three facts to keep in mind when choosing the artifact:
+Facts to keep in mind when choosing the artifact:
 
-- The release archive built from `2093b949` panics on its first TLS
-  connection (rustls has two crypto providers compiled in and no default; see
-  `docs/next-steps.md`, hosted run log). Until envd installs its provider
-  explicitly, build it alone with `scripts/build-envd-linux.sh`, which the
-  runner does from the deployed commit.
-
-- The release builds on `rust:1.97.1-bookworm`, so the binary links against
-  glibc 2.36. Terminal-Bench images based on `debian:bullseye` (glibc 2.31)
-  will fail `envd --version` in `setup`, before any model call. A musl
-  (static) target or an older build base on the Lightspeed side removes the
-  constraint; until then such tasks are preflight exclusions.
-- Only `x86_64-unknown-linux-gnu` is published. The adapter probes the sandbox
-  with `uname -m` and also accepts `aarch64-unknown-linux-gnu` for arm64
-  daemons; build that one locally with `scripts/build-envd-linux.sh arm64`
+- Compatibility is the environment protocol number alone, compared exactly
+  by both sides. `lightspeed-envd --print-build` prints it as JSON together
+  with the version, git sha, and target; the gateway's `initialize` reports
+  the number it speaks under `serverInfo.envd.protocolVersion`. The commits
+  need not match, and the gateway records the daemon's version, sha, and
+  protocol on the environment row at every registration.
+- The static build runs on any Linux image regardless of its glibc, so the
+  former `debian:bullseye` preflight exclusions are gone.
+- Only `x86_64-unknown-linux-musl` is published. The adapter probes the
+  sandbox with `uname -m` and also accepts `aarch64-unknown-linux-gnu` for
+  arm64 daemons; build that one locally with `scripts/build-envd-linux.sh arm64`
   (Docker, same pinned toolchain image) and point
   `LIGHTSPEED_HARBOR_ENVD_PATH` at `.local/envd/aarch64-unknown-linux-gnu/lightspeed-envd`.
 

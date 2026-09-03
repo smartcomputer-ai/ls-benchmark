@@ -34,15 +34,15 @@ deployed_sha() {
 
 sync_repo() {
   [ -f .local/hosted.env ] || { log "missing .local/hosted.env (operator hand-off)"; exit 2; }
-  [ -x .local/envd/x86_64-unknown-linux-gnu/lightspeed-envd ] || {
-    log "missing .local/envd/x86_64-unknown-linux-gnu/lightspeed-envd (release envd; see docs/next-steps.md)"; exit 2; }
+  [ -x .local/envd/x86_64-unknown-linux-musl/lightspeed-envd ] || {
+    log "missing .local/envd/x86_64-unknown-linux-musl/lightspeed-envd (release envd; see docs/next-steps.md)"; exit 2; }
   rssh "mkdir -p '$REMOTE_DIR/.local/envd' '$REMOTE_DIR/$RUN_DIR' && chmod 700 '$REMOTE_DIR/.local'"
   rsync -az --delete \
     --exclude .git --exclude .venv --exclude jobs --exclude .local --exclude '__pycache__' \
     --exclude .pytest_cache --exclude .ruff_cache \
     ./ "$RUNNER:$REMOTE_DIR/"
   rsync -az .local/hosted.env "$RUNNER:$REMOTE_DIR/.local/hosted.env"
-  rsync -az .local/envd/x86_64-unknown-linux-gnu "$RUNNER:$REMOTE_DIR/.local/envd/"
+  rsync -az .local/envd/x86_64-unknown-linux-musl "$RUNNER:$REMOTE_DIR/.local/envd/"
   rssh "chmod 600 '$REMOTE_DIR/.local/hosted.env'"
   # GitHub throttles unauthenticated clones from the VM's Hetzner address, so
   # ship Harbor's task cache (harbor dataset download <name>@<version> --cache
@@ -65,7 +65,7 @@ case "${1:-status}" in
     sync_repo
     sha="$(deployed_sha)"
     [ -n "$sha" ] || { log "could not read the deployed release commit from $PROD"; exit 1; }
-    stamp="$(rssh "cat '$REMOTE_DIR/.local/envd/x86_64-unknown-linux-gnu/lightspeed-envd.gitsha' 2>/dev/null" || true)"
+    stamp="$(rssh "cat '$REMOTE_DIR/.local/envd/x86_64-unknown-linux-musl/lightspeed-envd.gitsha' 2>/dev/null" || true)"
     [ "$stamp" = "$sha" ] || { log "staged envd is from ${stamp:-unknown}, deployed release is $sha; restage it"; exit 1; }
     if rssh "pgrep -f '[h]arbor run' >/dev/null"; then
       log "a harbor run is already active on $RUNNER; use status or stop"; exit 1

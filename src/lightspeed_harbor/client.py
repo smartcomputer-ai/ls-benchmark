@@ -17,6 +17,7 @@ profile) instead resolves the tenant from ``x-lightspeed-universe``.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
@@ -187,6 +188,7 @@ class LightspeedClient:
         *,
         session_id: str | None = None,
         display_name: str | None = None,
+        metadata: Mapping[str, str] | None = None,
         config: JsonObject | None = None,
         profile: JsonObject | None = None,
     ) -> JsonObject:
@@ -195,6 +197,8 @@ class LightspeedClient:
             params["sessionId"] = session_id
         if display_name is not None:
             params["displayName"] = display_name
+        if metadata:
+            params["metadata"] = dict(metadata)
         if config is not None:
             params["config"] = config
         if profile is not None:

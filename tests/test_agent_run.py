@@ -154,12 +154,16 @@ async def test_happy_path_end_to_end(tmp_path: Path, host: HostSettings):
         "tool_batches": 1,
         "tool_calls": 1,
         "tool_errors": 0,
+        "tool_output_bytes": 0,
+        "tool_output_truncations": 0,
+        "sleep_commands": 0,
         "model_time_ms": 3000,
         "tool_time_ms": 1000,
         "time_to_first_model_request_ms": 100,
         "time_to_first_tool_call_ms": 2200,
         "run_duration_ms": 4400,
         "terminal_event": "runCompleted",
+        "failure_kind": None,
     }
     assert context.metadata["lightspeed"]["measures"]["model_calls"] == 2
     assert context.metadata["lightspeed"]["events_exported"] == 12
@@ -386,3 +390,55 @@ def test_measures_ignore_other_runs_and_unknown_shapes():
     assert m["time_to_first_model_request_ms"] is None
     assert m["tool_errors"] == 1
     assert m["terminal_event"] is None
+
+
+def test_measures_account_for_tool_output_sleep_polling_and_failure_kind():
+    from lightspeed_harbor.agent import compute_measures
+
+    events = [
+        {"observedAtMs": 10, "kind": {"type": "runStarted", "runId": "run_1"}},
+        {
+            "observedAtMs": 20,
+            "kind": {
+                "type": "toolBatchStarted",
+                "runId": "run_1",
+                "batchId": "b1",
+                "calls": [
+                    {"callId": "c1", "arguments": '{"cmd": "sleep 30; tail build.log"}'},
+                    {"callId": "c2", "arguments": '{"command": "make -j4"}'},
+                    {"callId": "c3", "arguments": '{"argv": ["sleep", "5"]}'},
+                    {"callId": "c4", "arguments": "not json"},
+                ],
+            },
+        },
+        {
+            "observedAtMs": 30,
+            "kind": {
+                "type": "toolCallCompleted",
+                "runId": "run_1",
+                "status": "succeeded",
+                "outputBytes": 70000,
+                "truncated": True,
+            },
+        },
+        {
+            "observedAtMs": 31,
+            "kind": {
+                "type": "toolCallCompleted",
+                "runId": "run_1",
+                "status": "succeeded",
+                "outputBytes": 12,
+                "truncated": False,
+            },
+        },
+        {
+            "observedAtMs": 40,
+            "kind": {"type": "runFailed", "runId": "run_1", "kind": "limit_exceeded"},
+        },
+    ]
+    m = compute_measures(events, "run_1")
+    assert m["sleep_commands"] == 2
+    assert m["tool_output_bytes"] == 70012
+    assert m["tool_output_truncations"] == 1
+    assert m["terminal_event"] == "runFailed"
+    assert m["failure_kind"] == "limit_exceeded"

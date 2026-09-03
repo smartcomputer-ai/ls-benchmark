@@ -248,10 +248,12 @@ or exposing credentials.
   refusal, gateway error, or environment disconnect.
 - [x] Secondary measures derived from the events (`run.json` and
   `metadata.lightspeed.measures`): model calls, turns, tool batches, tool
-  calls and errors, model versus tool time, time to first model request and
-  first tool call, run duration, terminal event; plus the adapter's
-  registration and run timings, reasoning and total tokens. Output
-  truncations are not surfaced by the event log.
+  calls and errors, tool output bytes and truncations (from
+  `toolCallCompleted.outputBytes` / `.truncated`), commands that poll with
+  `sleep`, model versus tool time, time to first model request and first
+  tool call, run duration, terminal event, and the engine's failure kind
+  (`runFailed.kind`); plus the adapter's registration and run timings,
+  reasoning and total tokens.
 
 ## Slice 4 — Paired Terminal-Bench comparison
 

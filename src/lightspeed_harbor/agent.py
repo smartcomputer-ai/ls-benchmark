@@ -27,6 +27,7 @@ import hashlib
 import json
 import os
 import platform as host_platform
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -91,11 +92,37 @@ def build_session_config(
     return config
 
 
+_SLEEP_COMMAND = re.compile(r"(?:^|[;&|(]\s*)sleep\s")
+
+
+def _call_command(call: dict[str, Any]) -> str | None:
+    """The shell text of one tool call from its inline arguments: Codex's
+    ``cmd``, Claude Code's ``command``, or the canonical ``argv``."""
+    raw = call.get("arguments")
+    if not isinstance(raw, str):
+        return None
+    try:
+        args = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(args, dict):
+        return None
+    for key in ("cmd", "command"):
+        value = args.get(key)
+        if isinstance(value, str):
+            return value
+    argv = args.get("argv")
+    if isinstance(argv, list) and all(isinstance(part, str) for part in argv):
+        return " ".join(argv)
+    return None
+
+
 def compute_measures(events: list[dict[str, Any]], run_id: str | None) -> dict[str, Any]:
     """Secondary measures for one run from the raw session events: model calls,
-    turns, tool calls and errors, time to the first model request and first
-    tool call, and model versus tool time. Events of other runs are ignored;
-    unknown shapes are skipped rather than guessed."""
+    turns, tool calls and errors, tool output bytes and truncations, commands
+    that poll with ``sleep``, time to the first model request and first tool
+    call, model versus tool time, and the engine's failure kind. Events of
+    other runs are ignored; unknown shapes are skipped rather than guessed."""
     run_started: int | None = None
     gen_requested: dict[str, int] = {}
     batch_started: dict[str, int] = {}
@@ -105,12 +132,16 @@ def compute_measures(events: list[dict[str, Any]], run_id: str | None) -> dict[s
         "tool_batches": 0,
         "tool_calls": 0,
         "tool_errors": 0,
+        "tool_output_bytes": 0,
+        "tool_output_truncations": 0,
+        "sleep_commands": 0,
         "model_time_ms": 0,
         "tool_time_ms": 0,
         "time_to_first_model_request_ms": None,
         "time_to_first_tool_call_ms": None,
         "run_duration_ms": None,
         "terminal_event": None,
+        "failure_kind": None,
     }
     for event in events:
         kind = event.get("kind") if isinstance(event, dict) else None
@@ -138,6 +169,12 @@ def compute_measures(events: list[dict[str, Any]], run_id: str | None) -> dict[s
         elif kind_type == "toolBatchStarted":
             m["tool_batches"] += 1
             batch_started[str(kind.get("batchId"))] = at
+            for call in kind.get("calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                command = _call_command(call)
+                if command is not None and _SLEEP_COMMAND.search(command):
+                    m["sleep_commands"] += 1
         elif kind_type == "toolCallStarted":
             m["tool_calls"] += 1
             if run_started is not None and m["time_to_first_tool_call_ms"] is None:
@@ -145,12 +182,19 @@ def compute_measures(events: list[dict[str, Any]], run_id: str | None) -> dict[s
         elif kind_type == "toolCallCompleted":
             if kind.get("status") in _TOOL_ERROR_STATUSES:
                 m["tool_errors"] += 1
+            output_bytes = kind.get("outputBytes")
+            if isinstance(output_bytes, int):
+                m["tool_output_bytes"] += output_bytes
+            if kind.get("truncated") is True:
+                m["tool_output_truncations"] += 1
         elif kind_type == "toolBatchCompleted":
             started = batch_started.pop(str(kind.get("batchId")), None)
             if started is not None:
                 m["tool_time_ms"] += max(0, at - started)
         elif kind_type in _RUN_TERMINAL_KINDS:
             m["terminal_event"] = kind_type
+            if kind_type == "runFailed" and isinstance(kind.get("kind"), str):
+                m["failure_kind"] = kind["kind"]
             if run_started is not None:
                 m["run_duration_ms"] = at - run_started
     return m
@@ -346,7 +390,11 @@ class LightspeedAgent(BaseAgent):
         )
         session = (
             await client.session_start(
-                display_name=getattr(self, "session_id", None), config=state.session_config
+                display_name=getattr(self, "session_id", None),
+                # The same correlation map the registered environment carries,
+                # so one metadata filter finds a trial's session and sandbox.
+                metadata=state.metadata,
+                config=state.session_config,
             )
         )["session"]
         state.session_id = session["id"]

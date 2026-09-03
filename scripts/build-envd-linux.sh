@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build lightspeed-envd for a Linux sandbox architecture from the sibling
 # checkout, inside the digest-pinned Rust image the Lightspeed release uses.
-# The release pipeline only publishes x86_64; this produces the aarch64 binary
-# an arm64 Docker daemon (Apple silicon) needs for local development.
+# The release pipeline publishes x86_64 only, as a static musl binary; this
+# produces that same musl binary from a local commit, or the aarch64 (glibc)
+# binary an arm64 Docker daemon (Apple silicon) needs for local development.
 #
 # Usage: scripts/build-envd-linux.sh [arm64|amd64]   (default: the host arch)
 # Output: .local/envd/<target>/lightspeed-envd and its .sha256
@@ -12,7 +13,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 ARCH="${1:-$(uname -m)}"
 case "$ARCH" in
   arm64|aarch64) ARCH=arm64; TARGET=aarch64-unknown-linux-gnu ;;
-  amd64|x86_64) ARCH=amd64; TARGET=x86_64-unknown-linux-gnu ;;
+  amd64|x86_64) ARCH=amd64; TARGET=x86_64-unknown-linux-musl ;;
   *) echo "unknown architecture: $ARCH" >&2; exit 2 ;;
 esac
 
@@ -30,6 +31,7 @@ echo "building lightspeed-envd for $TARGET from $LS@${GIT_SHA:0:12} in $IMAGE" >
 docker run --rm --platform "linux/$ARCH" \
   -e CARGO_TARGET_DIR=/target \
   -e LIGHTSPEED_GIT_SHA="$GIT_SHA" \
+  -e TARGET="$TARGET" \
   -v "ls-benchmark-cargo-registry-$ARCH:/usr/local/cargo/registry" \
   -v "ls-benchmark-envd-target-$ARCH:/target" \
   -v "$LS:/workspace" \
@@ -40,10 +42,17 @@ docker run --rm --platform "linux/$ARCH" \
     set -euo pipefail
     apt-get update >/dev/null
     apt-get install -y --no-install-recommends \
-      clang cmake git libprotobuf-dev libssl-dev pkg-config protobuf-compiler >/dev/null
+      clang cmake git libprotobuf-dev libssl-dev musl-tools pkg-config protobuf-compiler >/dev/null
     git config --global --add safe.directory /workspace
-    cargo build --release --locked -p environment-daemon
-    install -m 0755 /target/release/lightspeed-envd /out/lightspeed-envd
+    if [[ "$TARGET" == *-linux-musl ]]; then
+      # Same static target as the release: aws-lc-rs compiles with musl-gcc.
+      rustup target add "$TARGET"
+      cargo build --release --locked --target "$TARGET" -p environment-daemon
+      install -m 0755 "/target/$TARGET/release/lightspeed-envd" /out/lightspeed-envd
+    else
+      cargo build --release --locked -p environment-daemon
+      install -m 0755 /target/release/lightspeed-envd /out/lightspeed-envd
+    fi
   '
 (cd "$OUT" && shasum -a 256 lightspeed-envd | tee lightspeed-envd.sha256 >&2)
 if [ -n "$(git -C "$LS" status --porcelain -- crates)" ]; then
