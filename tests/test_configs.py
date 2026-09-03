@@ -18,7 +18,10 @@ def test_config_matches_pinned_job_schema(path: Path):
     lightspeed = [
         a for a in config.agents if a.import_path == "lightspeed_harbor.agent:LightspeedAgent"
     ]
-    assert lightspeed, "every committed config must include the Lightspeed arm"
+    model_free = {"oracle", "nop"}
+    if all(a.name in model_free for a in config.agents):
+        return  # a verifier-only sweep; nothing to pair
+    assert lightspeed, "every committed config with a model must include the Lightspeed arm"
     for agent in lightspeed:
         assert agent.model_name, "the Lightspeed arm must name an explicit model"
         assert agent.kwargs.get("lightspeed_provider_id")

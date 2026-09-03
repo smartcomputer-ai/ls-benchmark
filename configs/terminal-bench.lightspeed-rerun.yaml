@@ -1,14 +1,13 @@
-# Targeted rerun of the tasks the 2026-09-02 full run lost to the adapter's
-# working-directory bug (fixed the same day: the sandbox's own `pwd` is used
-# when a task declares no workdir). Same model, effort, and concurrency
-# policy as configs/terminal-bench.lightspeed.yaml; merged into the report
-# with `scripts/report.py --job-dir <full> --job-dir <rerun>
-# --drop-failure-class harness_setup`.
+# Targeted rerun: the seven tasks the 2026-09-02 full run lost to envd's
+# process-group sweep (P151): three services killed before verification and
+# four budgets spent polling builds with `sleep`. Same model, effort, and
+# policy as configs/terminal-bench.lightspeed.yaml; merged into a report with
+# `scripts/report.py --job-dir <full> --job-dir <rerun> --supersede`.
 
 job_name: terminal-bench-lightspeed-rerun
 jobs_dir: jobs
 n_attempts: 1
-n_concurrent_trials: 3
+n_concurrent_trials: 7
 
 retry:
   max_retries: 0
@@ -21,14 +20,18 @@ datasets:
   - name: terminal-bench
     version: "2.0"
     task_names:
-      - prove-plus-comm
-      - fix-git
-      - sanitize-git-repo
+      - pypi-server
+      - configure-git-webserver
+      - install-windows-3.11
+      - fix-ocaml-gc
+      - mcmc-sampling-stan
+      - make-doom-for-mips
+      - train-fasttext
 
 agents:
   - import_path: lightspeed_harbor.agent:LightspeedAgent
     model_name: openai/gpt-5.6-terra
-    n_concurrent: 3
+    n_concurrent: 7
     kwargs:
       lightspeed_provider_id: openai
       profile_id: inline

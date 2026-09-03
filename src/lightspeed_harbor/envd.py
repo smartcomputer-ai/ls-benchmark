@@ -34,7 +34,7 @@ from uuid import UUID
 
 import httpx
 
-from lightspeed_harbor.config import HostSettings
+from lightspeed_harbor.config import ENV_ENVD_PATH, HostSettings
 from lightspeed_harbor.errors import HarnessSetupError
 
 ENVD_BINARY_NAME = "lightspeed-envd"
@@ -45,7 +45,7 @@ ENVD_BINARY_NAME = "lightspeed-envd"
 # (scripts/build-envd-linux.sh) for Apple silicon Docker daemons.
 SUPPORTED_TARGETS: Mapping[str, str] = {
     "linux/amd64": "x86_64-unknown-linux-musl",
-    "linux/arm64": "aarch64-unknown-linux-gnu",
+    "linux/arm64": "aarch64-unknown-linux-musl",
 }
 
 _UNAME_PLATFORMS: Mapping[str, str] = {
@@ -130,10 +130,14 @@ class EnvdArtifact:
 
     path: Path
     sha256: str
-    source: str  # "local" or "release"
+    source: str  # "local", "release", or "discovery"
     target: str | None = None
     archive_sha256: str | None = None
     release_url: str | None = None
+    git_sha: str | None = None
+    version: str | None = None
+    channel: str | None = None
+    protocol_version: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -143,6 +147,10 @@ class EnvdArtifact:
             "target": self.target,
             "archive_sha256": self.archive_sha256,
             "release_url": self.release_url,
+            "git_sha": self.git_sha,
+            "version": self.version,
+            "channel": self.channel,
+            "protocol_version": self.protocol_version,
         }
 
 
@@ -200,9 +208,18 @@ def default_cache_dir() -> Path:
 
 
 async def resolve_artifact(
-    host: HostSettings, *, target: str, cache_dir: Path | None = None
+    host: HostSettings,
+    *,
+    target: str,
+    cache_dir: Path | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> EnvdArtifact:
-    """Return the verified binary for ``target``: a local override or a pinned release."""
+    """Return the verified binary for ``target``.
+
+    Precedence: a local override (``LIGHTSPEED_HARBOR_ENVD_PATH``), then a
+    pinned release URL plus checksum, then the deployment's discovery document
+    (P152), which names the archive built from the deployed commit.
+    """
     if host.envd_path is not None:
         if not host.envd_path.is_file():
             raise HarnessSetupError(f"envd binary not found: {host.envd_path}")
@@ -213,27 +230,102 @@ async def resolve_artifact(
             )
         return EnvdArtifact(path=host.envd_path, sha256=digest, source="local", target=target)
 
-    assert host.envd_release_url is not None and host.envd_sha256 is not None
     cache_dir = cache_dir or default_cache_dir()
-    slot = cache_dir / host.envd_sha256
-    binary = slot / ENVD_BINARY_NAME
-    if not binary.is_file():
-        await _download_release(host.envd_release_url, host.envd_sha256, slot)
+    if host.envd_release_url is not None:
+        assert host.envd_sha256 is not None
+        binary = await _cached_download(
+            host.envd_release_url, host.envd_sha256, cache_dir, transport=transport
+        )
+        return EnvdArtifact(
+            path=binary,
+            sha256=sha256_file(binary),
+            source="release",
+            target=target,
+            archive_sha256=host.envd_sha256,
+            release_url=host.envd_release_url,
+        )
+
+    if not host.envd_discovery_url:
+        raise HarnessSetupError("no envd artifact configured and no discovery URL derived")
+    document = await _fetch_discovery(host.envd_discovery_url, transport=transport)
+    artifacts = document.get("artifacts") or {}
+    entry = artifacts.get(target) if isinstance(artifacts, dict) else None
+    if not isinstance(entry, dict) or not entry.get("url") or not entry.get("sha256"):
+        raise HarnessSetupError(
+            f"discovery document {host.envd_discovery_url} has no artifact for {target} "
+            f"(available: {sorted(artifacts) if isinstance(artifacts, dict) else []}); "
+            f"set {ENV_ENVD_PATH} for a locally built binary"
+        )
+    expected = str(entry["sha256"]).strip().lower()
+    binary = await _cached_download(str(entry["url"]), expected, cache_dir, transport=transport)
     return EnvdArtifact(
         path=binary,
         sha256=sha256_file(binary),
-        source="release",
+        source="discovery",
         target=target,
-        archive_sha256=host.envd_sha256,
-        release_url=host.envd_release_url,
+        archive_sha256=expected,
+        release_url=str(entry["url"]),
+        git_sha=(str(document.get("gitSha")) if document.get("gitSha") else None),
+        version=(str(document.get("version")) if document.get("version") else None),
+        channel=(str(document.get("channel")) if document.get("channel") else None),
+        protocol_version=(
+            int(document["protocolVersion"])
+            if isinstance(document.get("protocolVersion"), int)
+            else None
+        ),
     )
 
 
-async def _download_release(url: str, expected_sha256: str, slot: Path) -> None:
+async def _fetch_discovery(
+    url: str, *, transport: httpx.AsyncBaseTransport | None = None
+) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=30.0, transport=transport
+        ) as http:
+            response = await http.get(url)
+    except httpx.HTTPError as exc:
+        raise HarnessSetupError(f"envd discovery failed: {url}: {exc}") from exc
+    if response.status_code >= 400:
+        raise HarnessSetupError(
+            f"envd discovery failed: {url} returned HTTP {response.status_code}"
+        )
+    try:
+        document = response.json()
+    except ValueError as exc:
+        raise HarnessSetupError(f"envd discovery document at {url} is not JSON") from exc
+    if not isinstance(document, dict):
+        raise HarnessSetupError(f"envd discovery document at {url} is not an object")
+    return document
+
+
+async def _cached_download(
+    url: str,
+    expected_sha256: str,
+    cache_dir: Path,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> Path:
+    slot = cache_dir / expected_sha256
+    binary = slot / ENVD_BINARY_NAME
+    if not binary.is_file():
+        await _download_release(url, expected_sha256, slot, transport=transport)
+    return binary
+
+
+async def _download_release(
+    url: str,
+    expected_sha256: str,
+    slot: Path,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> None:
     slot.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="ls-benchmark-envd-") as temp:
         download = Path(temp) / "artifact"
-        async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as http:
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=120.0, transport=transport
+        ) as http:
             async with http.stream("GET", url) as response:
                 if response.status_code >= 400:
                     raise HarnessSetupError(

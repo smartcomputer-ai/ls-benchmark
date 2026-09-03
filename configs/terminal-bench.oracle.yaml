@@ -1,0 +1,27 @@
+# Oracle sweep: Harbor's built-in `oracle` agent runs each task's reference
+# solution and the verifier scores it. A task the oracle cannot pass on this
+# runner is a dataset or verifier problem, not an agent result, and becomes a
+# predeclared exclusion for every arm. No model is involved.
+#
+# Run: scripts/run-remote.sh start configs/terminal-bench.oracle.yaml
+# Read: uv run python scripts/report.py --job-dir jobs/<job>
+
+job_name: terminal-bench-oracle
+jobs_dir: jobs
+n_attempts: 1
+n_concurrent_trials: 12
+
+retry:
+  max_retries: 0
+
+environment:
+  type: docker
+  delete: true
+
+datasets:
+  - name: terminal-bench
+    version: "2.0"
+
+agents:
+  - name: oracle
+    n_concurrent: 12

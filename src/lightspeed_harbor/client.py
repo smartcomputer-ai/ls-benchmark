@@ -43,6 +43,7 @@ METHODS: frozenset[str] = frozenset(
         "environments/read",
         "environments/list",
         "environments/close",
+        "environments/registration-keys/read",
     }
 )
 
@@ -191,6 +192,7 @@ class LightspeedClient:
         metadata: Mapping[str, str] | None = None,
         config: JsonObject | None = None,
         profile: JsonObject | None = None,
+        delete_after_close_ms: int | None = None,
     ) -> JsonObject:
         params: JsonObject = {}
         if session_id is not None:
@@ -203,6 +205,8 @@ class LightspeedClient:
             params["config"] = config
         if profile is not None:
             params["profile"] = profile
+        if delete_after_close_ms is not None:
+            params["deleteAfterCloseMs"] = delete_after_close_ms
         return await self.call("session/start", params)
 
     async def session_read(self, session_id: str) -> JsonObject:

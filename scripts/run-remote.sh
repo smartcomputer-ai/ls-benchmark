@@ -12,37 +12,27 @@
 #   scripts/run-remote.sh stop                       # SIGINT the running harbor
 #   scripts/run-remote.sh ssh [cmd...]               # shell on the VM
 #
-# The VM never talks to hz01: the deployed release commit is read from hz01
-# here and passed along, and the x86_64 envd is shipped from .local/envd/.
-# Overrides: LS_RUNNER (ssh host, harbor-runner), LS_PROD_HOST (hz01),
-# LS_REMOTE_DIR (~/ls-benchmark).
+# The VM needs only https://ls.bot: the adapter downloads the deployment's
+# published envd archive and checks it against the server's build (P152).
+# Overrides: LS_RUNNER (ssh host, harbor-runner), LS_REMOTE_DIR (~/ls-benchmark).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 RUNNER="${LS_RUNNER:-harbor-runner}"
-PROD="${LS_PROD_HOST:-hz01}"
 REMOTE_DIR="${LS_REMOTE_DIR:-ls-benchmark}"
 RUN_DIR=".local/runs"
 
 log() { echo "run-remote: $*" >&2; }
 rssh() { ssh -o BatchMode=yes -o ConnectTimeout=20 "$RUNNER" "$@"; }
 
-deployed_sha() {
-  ssh -o BatchMode=yes -o ConnectTimeout=15 "$PROD" \
-    "sed -n 's/^LIGHTSPEED_RELEASE_GIT_SHA=//p' /var/lib/ls-deploy/last-good.env"
-}
-
 sync_repo() {
   [ -f .local/hosted.env ] || { log "missing .local/hosted.env (operator hand-off)"; exit 2; }
-  [ -x .local/envd/x86_64-unknown-linux-musl/lightspeed-envd ] || {
-    log "missing .local/envd/x86_64-unknown-linux-musl/lightspeed-envd (release envd; see docs/next-steps.md)"; exit 2; }
   rssh "mkdir -p '$REMOTE_DIR/.local/envd' '$REMOTE_DIR/$RUN_DIR' && chmod 700 '$REMOTE_DIR/.local'"
   rsync -az --delete \
     --exclude .git --exclude .venv --exclude jobs --exclude .local --exclude '__pycache__' \
     --exclude .pytest_cache --exclude .ruff_cache \
     ./ "$RUNNER:$REMOTE_DIR/"
   rsync -az .local/hosted.env "$RUNNER:$REMOTE_DIR/.local/hosted.env"
-  rsync -az .local/envd/x86_64-unknown-linux-musl "$RUNNER:$REMOTE_DIR/.local/envd/"
   rssh "chmod 600 '$REMOTE_DIR/.local/hosted.env'"
   # GitHub throttles unauthenticated clones from the VM's Hetzner address, so
   # ship Harbor's task cache (harbor dataset download <name>@<version> --cache
@@ -63,17 +53,13 @@ case "${1:-status}" in
     shift
     config="${1:?usage: run-remote.sh start <config> [harbor args]}"; shift
     sync_repo
-    sha="$(deployed_sha)"
-    [ -n "$sha" ] || { log "could not read the deployed release commit from $PROD"; exit 1; }
-    stamp="$(rssh "cat '$REMOTE_DIR/.local/envd/x86_64-unknown-linux-musl/lightspeed-envd.gitsha' 2>/dev/null" || true)"
-    [ "$stamp" = "$sha" ] || { log "staged envd is from ${stamp:-unknown}, deployed release is $sha; restage it"; exit 1; }
     if rssh "pgrep -f '[h]arbor run' >/dev/null"; then
       log "a harbor run is already active on $RUNNER; use status or stop"; exit 1
     fi
     ts="$(date -u +%Y%m%d-%H%M%S)"
     printf -v quoted ' %q' "$@"
     # `cd` and `export` run in the login shell; only the runner is backgrounded.
-    rssh "cd '$REMOTE_DIR' || exit 1; export PATH=\"\$HOME/.local/bin:\$PATH\" LS_DEPLOYED_GIT_SHA='$sha' LS_SANDBOX_ARCH=amd64 ${LS_REMOTE_ENV:-}; \
+    rssh "cd '$REMOTE_DIR' || exit 1; export PATH=\"\$HOME/.local/bin:\$PATH\" LS_SANDBOX_ARCH=amd64 ${LS_REMOTE_ENV:-}; \
       nohup setsid scripts/run-hosted.sh '$config'$quoted > '$RUN_DIR/$ts.log' 2>&1 < /dev/null & \
       echo \$! > '$RUN_DIR/$ts.pid'; echo started run $ts pid \$(cat '$RUN_DIR/$ts.pid')"
     ;;

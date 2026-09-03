@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from uuid import UUID
 
+import httpx
 import pytest
 from harbor.models.agent.context import AgentContext
 
@@ -15,6 +16,7 @@ from lightspeed_harbor.client import LightspeedClient
 from lightspeed_harbor.config import HostSettings
 from lightspeed_harbor.envd import SandboxPaths
 from lightspeed_harbor.errors import HarnessSetupError
+from tests.fakes import GIT_SHA as GIT_SHA_EXPECTED
 from tests.fakes import RECEIPT, FakeEnvironment, FakeLightspeed
 
 REGISTRATION_KEY = "lsrk_super_secret_value"
@@ -79,7 +81,9 @@ async def test_happy_path_end_to_end(tmp_path: Path, host: HostSettings):
     await agent.run(INSTRUCTION, env, context)
 
     methods = fake.methods()
-    assert methods[:6] == [
+    # setup() asks the server which build it is; run() records it again for provenance.
+    assert methods[:7] == [
+        "initialize",
         "initialize",
         "environments/read",
         "models/list",
@@ -88,11 +92,13 @@ async def test_happy_path_end_to_end(tmp_path: Path, host: HostSettings):
         "session/runs/start",
     ]
     assert "session/runs/cancel" not in methods
-    assert methods[-2:] == ["session/close", "environments/close"]
+    # The environment and its daemon outlive the agent phase so services the
+    # agent left running are still there for the verifier.
+    assert methods[-1] == "session/close"
+    assert "environments/close" not in methods
     assert (
         fake.params("session/environments/activate")[0]["environmentId"] == RECEIPT["environmentId"]
     )
-    assert fake.params("environments/close")[0]["environmentId"] == RECEIPT["environmentId"]
 
     start = fake.params("session/runs/start")[0]
     assert start["source"]["items"] == [{"type": "text", "text": INSTRUCTION}]
@@ -120,12 +126,13 @@ async def test_happy_path_end_to_end(tmp_path: Path, host: HostSettings):
     assert lightspeed["status"] == "completed"
     assert lightspeed["session_id"] == "session_1"
     assert lightspeed["reasoning_tokens"] == 20
-    assert list(lightspeed["cleanup"]) == ["session/close", "envd/stop", "environments/close"]
-    assert set(lightspeed["cleanup"].values()) == {"ok"}
+    assert lightspeed["cleanup"]["session/close"] == "ok"
+    assert lightspeed["cleanup"]["envd/stop"].startswith("skipped")
+    assert lightspeed["cleanup"]["environments/close"].startswith("skipped")
 
     # The key entered the sandbox only as a file, which is gone; no secret in any command.
     assert str(PATHS.key_file) not in env.files
-    assert env.started and env.stopped
+    assert env.started and not env.stopped
     joined = "\n".join(env.commands())
     assert REGISTRATION_KEY not in joined and API_KEY not in joined
     assert "LIGHTSPEED_ENVD_REGISTRATION_KEY_FILE" in joined
@@ -142,7 +149,8 @@ async def test_happy_path_end_to_end(tmp_path: Path, host: HostSettings):
     assert registration["registration_key_id"] == "key_1"
     assert registration["metadata"]["harborContextId"] == str(agent.context_id)
     provenance = _artifact(tmp_path, "provenance.json")
-    assert provenance["lightspeed"]["serverInfo"] == {"name": "lightspeed", "version": "test"}
+    assert provenance["lightspeed"]["serverInfo"]["name"] == "lightspeed"
+    assert provenance["lightspeed"]["serverInfo"]["gitSha"] == GIT_SHA_EXPECTED
     assert provenance["envd"]["artifact"]["sha256"]
 
     events = _artifact(tmp_path, "events.json")
@@ -200,7 +208,7 @@ async def test_envd_exit_before_receipt_is_a_harness_setup_failure(
     with pytest.raises(HarnessSetupError, match="exited before writing a registration receipt"):
         await agent.run(INSTRUCTION, env, AgentContext())
 
-    assert fake.calls == [], "no session and no model call without a receipt"
+    assert fake.methods() == ["initialize"], "setup only asks the server which build it is"
     assert str(PATHS.key_file) not in env.files, "key file removed during cleanup"
     assert env.stopped
     run = _artifact(tmp_path, "run.json")
@@ -216,7 +224,7 @@ async def test_registration_timeout_reports_the_log(tmp_path: Path, host: HostSe
     await agent.setup(env)
     with pytest.raises(HarnessSetupError, match="no registration receipt"):
         await agent.run(INSTRUCTION, env, AgentContext())
-    assert fake.calls == []
+    assert fake.methods() == ["initialize"]
 
 
 async def test_unknown_model_fails_closed_without_a_session(tmp_path: Path, host: HostSettings):
@@ -238,8 +246,8 @@ async def test_unknown_model_fails_closed_without_a_session(tmp_path: Path, host
         await agent.run(INSTRUCTION, env, AgentContext())
 
     assert "session/start" not in fake.methods()
-    assert "environments/close" in fake.methods(), "the registered environment is closed"
-    assert env.stopped
+    assert "environments/close" not in fake.methods(), "kept alive for the verifier"
+    assert not env.stopped
 
 
 async def test_receipt_and_environment_record_must_agree(tmp_path: Path, host: HostSettings):
@@ -274,8 +282,8 @@ async def test_harbor_cancellation_cancels_the_run_and_cleans_up(
     methods = fake.methods()
     assert "session/runs/cancel" in methods
     assert methods.index("session/runs/cancel") < methods.index("session/close")
-    assert "environments/close" in methods
-    assert env.stopped
+    assert "environments/close" not in methods
+    assert not env.stopped
     assert context.metadata["lightspeed"]["cancelled"] is True
     assert context.n_input_tokens == 1200, "usage projected progressively before the timeout"
     run = _artifact(tmp_path, "run.json")
@@ -442,3 +450,128 @@ def test_measures_account_for_tool_output_sleep_polling_and_failure_kind():
     assert m["tool_output_truncations"] == 1
     assert m["terminal_event"] == "runFailed"
     assert m["failure_kind"] == "limit_exceeded"
+
+
+def _discovery_transport(git_sha: str, binary: bytes = b"ELF-envd") -> httpx.MockTransport:
+    """Serve a P152 discovery document and the archive it names."""
+    import hashlib
+    import io
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        info = tarfile.TarInfo("lightspeed-envd")
+        info.size = len(binary)
+        tar.addfile(info, io.BytesIO(binary))
+    archive = buffer.getvalue()
+    digest = hashlib.sha256(archive).hexdigest()
+    document = {
+        "version": "0.1.0",
+        "gitSha": git_sha,
+        "channel": "main",
+        "protocolVersion": 2,
+        "artifacts": {
+            "x86_64-unknown-linux-musl": {
+                "file": "lightspeed-envd-0.1.0-x86_64-unknown-linux-musl.tar.gz",
+                "sha256": digest,
+                "url": "https://ls.example/.well-known/lightspeed-envd/x/envd.tar.gz",
+            }
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/.well-known/lightspeed-envd":
+            return httpx.Response(200, json=document)
+        if request.url.path.endswith("envd.tar.gz"):
+            return httpx.Response(200, content=archive)
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
+def _discovery_host(tmp_path: Path) -> HostSettings:
+    return HostSettings(
+        api_url="https://ls.example/rpc",
+        api_key=API_KEY,
+        registration_key=REGISTRATION_KEY,
+        gateway_url="wss://ls.example/environment-gateway/connect",
+        envd_discovery_url="https://ls.example/.well-known/lightspeed-envd",
+    )
+
+
+async def test_setup_resolves_envd_from_the_discovery_document(tmp_path: Path, monkeypatch):
+    from tests.fakes import GIT_SHA
+
+    monkeypatch.setattr("lightspeed_harbor.envd.default_cache_dir", lambda: tmp_path / "cache")
+    fake = FakeLightspeed(run_statuses=("completed",))
+    env = FakeEnvironment()
+    agent = make_agent(tmp_path, _discovery_host(tmp_path), fake)
+    agent._artifact_transport = _discovery_transport(GIT_SHA)
+    await agent.setup(env)
+    assert agent._artifact.source == "discovery"
+    assert agent._artifact.git_sha == GIT_SHA
+    assert agent._artifact.target == "x86_64-unknown-linux-musl"
+    assert env.files[str(PATHS.binary)] == b"ELF-envd"
+    await agent.run(INSTRUCTION, env, AgentContext())
+    provenance = _artifact(tmp_path, "provenance.json")
+    assert provenance["envd"]["artifact"]["source"] == "discovery"
+    assert provenance["lightspeed"]["serverInfo"]["gitSha"] == GIT_SHA
+
+
+async def test_setup_refuses_an_envd_from_another_commit(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("lightspeed_harbor.envd.default_cache_dir", lambda: tmp_path / "cache")
+    fake = FakeLightspeed()
+    env = FakeEnvironment()
+    agent = make_agent(tmp_path, _discovery_host(tmp_path), fake)
+    agent._artifact_transport = _discovery_transport("0" * 40)
+    with pytest.raises(HarnessSetupError, match="mismatched daemon"):
+        await agent.setup(env)
+    assert str(PATHS.binary) not in env.files, "nothing is uploaded before the check"
+
+
+async def test_sandbox_envd_must_report_the_servers_build(tmp_path: Path, host: HostSettings):
+    from dataclasses import replace
+
+    fake = FakeLightspeed()
+    env = FakeEnvironment(version_output="lightspeed-envd 0.1.0 (git 0000000000, x86_64)")
+    agent = make_agent(tmp_path, host, fake)
+    with pytest.raises(HarnessSetupError, match="not the server's build"):
+        await agent.setup(env)
+    tolerant = make_agent(tmp_path, replace(host, envd_allow_mismatch=True), FakeLightspeed())
+    await tolerant.setup(FakeEnvironment(version_output="lightspeed-envd 0.1.0 (git 0000000000)"))
+
+
+async def test_session_carries_campaign_and_retention(tmp_path: Path, host: HostSettings):
+    from dataclasses import replace
+
+    fake = FakeLightspeed(run_statuses=("completed",))
+    env = FakeEnvironment()
+    agent = make_agent(
+        tmp_path, replace(host, campaign="tb2-lightspeed-2026-09-03", session_ttl_sec=3600), fake
+    )
+    await agent.setup(env)
+    await agent.run(INSTRUCTION, env, AgentContext())
+    start = fake.params("session/start")[0]
+    assert start["metadata"]["campaign"] == "tb2-lightspeed-2026-09-03"
+    assert start["metadata"]["harborTaskName"] == "toy-file-write"
+    assert start["metadata"]["source"] == "harbor"
+    assert start["deleteAfterCloseMs"] == 3_600_000
+    no_ttl = make_agent(
+        tmp_path / "b",
+        replace(host, session_ttl_sec=None),
+        FakeLightspeed(run_statuses=("completed",)),
+    )
+    await no_ttl.setup(FakeEnvironment())
+    await no_ttl.run(INSTRUCTION, FakeEnvironment(), AgentContext())
+
+
+async def test_opting_out_tears_the_environment_down_after_the_run(
+    tmp_path: Path, host: HostSettings
+):
+    fake = FakeLightspeed(run_statuses=("completed",))
+    env = FakeEnvironment()
+    agent = make_agent(tmp_path, host, fake, keep_environment_for_verifier=False)
+    await agent.setup(env)
+    await agent.run(INSTRUCTION, env, AgentContext())
+    assert env.stopped
+    assert fake.methods()[-2:] == ["session/close", "environments/close"]

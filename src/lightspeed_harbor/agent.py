@@ -16,8 +16,10 @@ Job configuration:
           lightspeed_provider_id: <provider-id>
           profile_id: inline
           reasoning_effort: <effort>
-          # optional: api_kind, max_turns, max_output_tokens,
-          # registration_timeout_sec, poll_interval_sec, cleanup_timeout_sec
+          # optional: api_kind, max_turns, max_output_tokens, jobs (default
+          # true), instructions (bundled prompt name, a file path, or "none";
+          # default "harbor-terminal"), registration_timeout_sec,
+          # poll_interval_sec, cleanup_timeout_sec, keep_environment_for_verifier
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from typing import Any
 
 import harbor
 from harbor.agents.base import BaseAgent
+from importlib import resources
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
@@ -64,12 +67,35 @@ def _utcnow() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
+DEFAULT_INSTRUCTIONS = "harbor-terminal"
+
+
+def load_instructions(spec: str | None) -> tuple[str, str] | None:
+    """Resolve the harness prompt: ``None``/``"none"`` for no prompt, a bundled
+    prompt name (``harbor-terminal``), or a path to a text file. Returns
+    ``(text, source)``."""
+    if not spec or spec.lower() == "none":
+        return None
+    path = Path(spec)
+    if path.suffix and path.is_file():
+        return path.read_text(), str(path)
+    bundled = resources.files("lightspeed_harbor").joinpath("prompts", f"{spec}.md")
+    if bundled.is_file():
+        return bundled.read_text(), f"bundled:{spec}"
+    raise HarnessSetupError(f"instructions {spec!r} is neither a bundled prompt nor a file")
+
+
 def build_session_config(
-    settings: AgentSettings, model: dict[str, str], registration_key_id: str | None
+    settings: AgentSettings,
+    model: dict[str, str],
+    registration_key_id: str | None,
+    *,
+    jobs: bool = True,
 ) -> dict[str, Any]:
     """The terminal-only inline profile: one model route, the environment tool
-    surface scoped to the campaign key, no MCP, web, sub-agents, VFS, or skills."""
-    environments: dict[str, Any] = {"selectionTools": False}
+    surface (process tools and, by default, durable jobs) scoped to the campaign
+    key, no MCP, web, sub-agents, VFS, or skills."""
+    environments: dict[str, Any] = {"selectionTools": False, "jobs": bool(jobs)}
     if registration_key_id:
         environments["registrationKeys"] = [registration_key_id]
     config: dict[str, Any] = {
@@ -248,9 +274,12 @@ class LightspeedAgent(BaseAgent):
         api_kind: str | None = None,
         max_turns: int | None = None,
         max_output_tokens: int | None = None,
+        jobs: bool = True,
+        instructions: str | None = DEFAULT_INSTRUCTIONS,
         registration_timeout_sec: float = 90.0,
         poll_interval_sec: float = 2.0,
         cleanup_timeout_sec: float = 60.0,
+        keep_environment_for_verifier: bool = True,
         host_settings: HostSettings | None = None,
         **kwargs: Any,
     ) -> None:
@@ -272,9 +301,22 @@ class LightspeedAgent(BaseAgent):
         self.registration_timeout_sec = float(registration_timeout_sec)
         self.poll_interval_sec = float(poll_interval_sec)
         self.cleanup_timeout_sec = float(cleanup_timeout_sec)
+        # Processes the agent left running (a server the verifier must reach)
+        # have envd's pipes as stdio; stopping envd or closing the environment
+        # before the verifier kills them with EPIPE. Leave both alive: Harbor
+        # destroys the sandbox after verification and the registration key's
+        # ephemeral grace closes the environment once the daemon is gone.
+        self.keep_environment_for_verifier = bool(keep_environment_for_verifier)
+        self.jobs = bool(jobs)
+        # The harness prompt (Lightspeed's own instructions for this tool
+        # surface). It never sees the task; its digest goes into provenance.
+        self.instructions = load_instructions(instructions)
         self._platform: str | None = None
         self._artifact: envd.EnvdArtifact | None = None
         self._envd_version: str | None = None
+        self._server_info: dict[str, Any] | None = None
+        # Test hook: transport for artifact discovery and download.
+        self._artifact_transport: Any = None
 
     @staticmethod
     def name() -> str:
@@ -290,13 +332,39 @@ class LightspeedAgent(BaseAgent):
         no durable remote state, so a failure here costs no model call."""
         self._platform = await envd.detect_platform(environment)
         target = envd.SUPPORTED_TARGETS[self._platform]
-        self._artifact = await envd.resolve_artifact(self.host, target=target)
+        # The server says which build it is (P152); the daemon must be that build.
+        async with self._make_client() as client:
+            self._server_info = (await client.initialize()).get("serverInfo") or {}
+        server_sha = str(self._server_info.get("gitSha") or "") or None
+        self._artifact = await envd.resolve_artifact(
+            self.host, target=target, transport=self._artifact_transport
+        )
+        if (
+            server_sha
+            and self._artifact.git_sha
+            and self._artifact.git_sha != server_sha
+            and not self.host.envd_allow_mismatch
+        ):
+            raise HarnessSetupError(
+                f"envd artifact is built from {self._artifact.git_sha[:12]} but the server "
+                f"runs {server_sha[:12]}; refusing a mismatched daemon"
+            )
         self._envd_version = await envd.install(
             environment, self._artifact, self.paths, ca_file=self.host.envd_ca_file
         )
         if self.host.envd_version and self.host.envd_version not in self._envd_version:
             raise HarnessSetupError(
                 f"envd reports {self._envd_version!r}, expected version {self.host.envd_version!r}"
+            )
+        if (
+            server_sha
+            and server_sha not in self._envd_version
+            and not self.host.envd_allow_mismatch
+        ):
+            raise HarnessSetupError(
+                f"envd in the sandbox reports {self._envd_version!r}, which is not the server's "
+                f"build {server_sha[:12]}; set LIGHTSPEED_HARBOR_ENVD_ALLOW_MISMATCH=1 only for "
+                "development"
             )
         self.logger.info(
             "lightspeed-envd %s (%s, sha256 %s) installed at %s",
@@ -354,9 +422,15 @@ class LightspeedAgent(BaseAgent):
     ) -> None:
         clock = time.monotonic()
         await envd.write_key_file(environment, self.paths, self.host.registration_key)
+        harbor_session = getattr(self, "session_id", None)
+        task_name = (
+            harbor_session.split("__")[0] if harbor_session and "__" in harbor_session else None
+        )
         state.metadata = envd.correlation_metadata(
             context_id=getattr(self, "context_id", None),
-            session_id=getattr(self, "session_id", None),
+            session_id=harbor_session,
+            task_name=task_name,
+            extra={"campaign": self.host.campaign} if self.host.campaign else None,
         )
         command = envd.start_command(
             self.paths,
@@ -386,15 +460,30 @@ class LightspeedAgent(BaseAgent):
         )
         state.model = await self._resolve_model(client)
         state.session_config = build_session_config(
-            self.settings, state.model, state.registration_key_id
+            self.settings, state.model, state.registration_key_id, jobs=self.jobs
         )
+        profile: dict[str, Any] | None = None
+        session_kwargs: dict[str, Any] = {"config": state.session_config}
+        if self.instructions is not None:
+            profile = {
+                "kind": "inline",
+                "profile": {
+                    "config": state.session_config,
+                    "instructions": {"type": "text", "text": self.instructions[0]},
+                },
+            }
+            session_kwargs = {"profile": profile}
         session = (
             await client.session_start(
                 display_name=getattr(self, "session_id", None),
                 # The same correlation map the registered environment carries,
                 # so one metadata filter finds a trial's session and sandbox.
                 metadata=state.metadata,
-                config=state.session_config,
+                **session_kwargs,
+                # Evaluation sessions collect themselves (P154); None keeps them.
+                delete_after_close_ms=(
+                    self.host.session_ttl_sec * 1000 if self.host.session_ttl_sec else None
+                ),
             )
         )["session"]
         state.session_id = session["id"]
@@ -679,14 +768,22 @@ class LightspeedAgent(BaseAgent):
             steps.append(
                 ("session/close", lambda: client.session_close(state.session_id, force=True))
             )
-        steps.append(("envd/stop", lambda: envd.stop(environment, self.paths)))
-        if client and state.receipt:
+        # A trial that never registered, or a caller that opted out, still tears
+        # the daemon and the environment down here; otherwise both outlive the
+        # agent phase on purpose (see __init__).
+        teardown = not self.keep_environment_for_verifier or state.receipt is None
+        if teardown:
+            steps.append(("envd/stop", lambda: envd.stop(environment, self.paths)))
+        if client and state.receipt and teardown:
             steps.append(
                 (
                     "environments/close",
                     lambda: client.environments_close(state.receipt.environment_id),
                 )
             )
+        if state.receipt and not teardown:
+            state.cleanup["envd/stop"] = "skipped: kept for the verifier"
+            state.cleanup["environments/close"] = "skipped: ephemeral grace closes it"
         if not state.key_deleted:
             steps.append(("key/delete", lambda: envd.delete_key_file(environment, self.paths)))
         try:
@@ -734,6 +831,16 @@ class LightspeedAgent(BaseAgent):
                 "server": server,
                 "envd_version": self._envd_version,
             },
+        }
+
+    def _instructions_record(self) -> dict[str, Any] | None:
+        if self.instructions is None:
+            return None
+        text, source = self.instructions
+        return {
+            "source": source,
+            "sha256": hashlib.sha256(text.encode()).hexdigest(),
+            "bytes": len(text.encode()),
         }
 
     def _write_artifacts(self, state: _RunState) -> None:
@@ -795,6 +902,7 @@ class LightspeedAgent(BaseAgent):
                 "platform": self._platform,
                 "artifact": self._artifact.as_dict() if self._artifact else None,
             },
+            "instructions": self._instructions_record(),
             "harbor_session_id": getattr(self, "session_id", None),
             "harbor_context_id": str(getattr(self, "context_id", None) or "") or None,
             "started_at": state.started_at,

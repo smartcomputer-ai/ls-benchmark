@@ -27,6 +27,13 @@ require_gateway() {
   log "gateway ok: $(json_get - 'd["result"]["result"]["serverInfo"]["name"] + " " + d["result"]["result"]["serverInfo"]["version"]' <<<"$response")"
 }
 
+# The build the server reports (P152); empty when it does not say.
+server_git_sha() {
+  rpc initialize '{}' 10 2>/dev/null | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+print(((d.get("result") or {}).get("result") or {}).get("serverInfo", {}).get("gitSha") or "")'
+}
+
 # Map an architecture name to the envd target triple. Sets ARCH and TARGET.
 envd_target() {
   case "$1" in
@@ -37,30 +44,33 @@ envd_target() {
 }
 
 # Reuse the registration key stored in <file> while it is active with more
-# than an hour left; otherwise mint an ephemeral one. Exports
+# than an hour left and at least <max-active> capacity; otherwise mint an
+# ephemeral one. Environments stay open through verification and close by
+# grace (LS_KEY_GRACE_MS, default 60 s) once Harbor destroys the sandbox, so
+# capacity must cover concurrency plus the grace tail. Exports
 # LIGHTSPEED_HARBOR_REGISTRATION_KEY and sets REGISTRATION_KEY_ID.
 ensure_registration_key() { # ensure_registration_key <file> <display-name> <max-active> <hours>
   local file="$1" name="$2" max_active="$3" hours="$4"
-  local now_ms key_ok=false key_id st exp
+  local now_ms key_ok=false key_id st exp cap
   now_ms=$(( $(date +%s) * 1000 ))
   if [ -f "$file" ]; then
     key_id="$(json_get "$file" 'd["result"]["result"]["registrationKey"]["registrationKeyId"]' 2>/dev/null || true)"
     if [ -n "$key_id" ]; then
-      read -r st exp <<<"$(rpc environments/registration-keys/read "{\"registrationKeyId\":\"$key_id\"}" 2>/dev/null \
-        | json_get - 'str(d["result"]["result"]["registrationKey"]["status"]) + " " + str(d["result"]["result"]["registrationKey"].get("expiresAtMs") or 0)' 2>/dev/null \
-        || echo "unknown 0")"
-      if [ "$st" = active ] && { [ "$exp" = 0 ] || [ "$exp" -gt $(( now_ms + 3600000 )) ]; }; then
+      read -r st exp cap <<<"$(rpc environments/registration-keys/read "{\"registrationKeyId\":\"$key_id\"}" 2>/dev/null \
+        | json_get - 'str(d["result"]["result"]["registrationKey"]["status"]) + " " + str(d["result"]["result"]["registrationKey"].get("expiresAtMs") or 0) + " " + str(d["result"]["result"]["registrationKey"].get("maxActiveEnvironments") or 0)' 2>/dev/null \
+        || echo "unknown 0 0")"
+      if [ "$st" = active ] && { [ "$exp" = 0 ] || [ "$exp" -gt $(( now_ms + 3600000 )) ]; } && { [ "$cap" = 0 ] || [ "$cap" -ge "$max_active" ]; }; then
         key_ok=true
-        log "registration key $key_id active"
+        log "registration key $key_id active (max active $cap)"
       else
-        log "registration key $key_id is $st; minting a new one"
+        log "registration key $key_id is $st with max active $cap; minting a new one"
       fi
     fi
   fi
   if [ "$key_ok" != true ]; then
     mkdir -p "$(dirname "$file")"
     rpc environments/registration-keys/create \
-      "{\"displayName\":\"$name\",\"identityMode\":\"ephemeral\",\"maxActiveEnvironments\":$max_active,\"expiresAtMs\":$(( now_ms + hours * 3600000 ))}" \
+      "{\"displayName\":\"$name\",\"identityMode\":\"ephemeral\",\"maxActiveEnvironments\":$max_active,\"ephemeralDisconnectGraceMs\":${LS_KEY_GRACE_MS:-60000},\"expiresAtMs\":$(( now_ms + hours * 3600000 ))}" \
       > "$file.tmp"
     if ! json_get "$file.tmp" 'd["result"]["result"]["secret"][:5]' >/dev/null 2>&1; then
       log "registration key creation failed: $(cat "$file.tmp")"; rm -f "$file.tmp"; return 1
@@ -81,7 +91,9 @@ run_harbor_job() { # run_harbor_job <config> <name-prefix> [extra harbor args...
   jobs_dir="$(uv run python -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1])).get("jobs_dir") or "jobs")' "$config")"
   job_name="${prefix}-$(date -u +%Y%m%d-%H%M%S)"
   JOB_DIR="$jobs_dir/$job_name"
-  log "harbor run -c $config -y --job-name $job_name $*"
+  # Sessions and environments carry the job name as `campaign` metadata.
+  export LIGHTSPEED_HARBOR_CAMPAIGN="${LIGHTSPEED_HARBOR_CAMPAIGN:-$job_name}"
+  log "harbor run -c $config -y --job-name $job_name $* (campaign $LIGHTSPEED_HARBOR_CAMPAIGN)"
   set +e
   uv run harbor run -c "$config" -y --job-name "$job_name" "$@"
   HARBOR_STATUS=$?

@@ -95,6 +95,46 @@ sandbox is unreachable (a separate directory because the sandbox creates
 `lightspeed/` as root on Linux Docker hosts); that is the one deviation from the `/logs/artifacts/lightspeed/`
 paths in P149.
 
+## Server identity and envd discovery (P152)
+
+`initialize` reports the build: `serverInfo.gitSha` and
+`serverInfo.envd {version, gitSha, protocolVersion, targets}`. The
+deployment publishes a discovery document at
+`<api origin>/.well-known/lightspeed-envd`:
+
+```json
+{"version": "0.1.0", "gitSha": "…", "channel": "main", "protocolVersion": 2,
+ "artifacts": {"x86_64-unknown-linux-musl": {"file": "…", "sha256": "…", "url": "https://…"}}}
+```
+
+The adapter's `setup()` calls `initialize`, resolves the archive for the
+sandbox architecture from that document (unless `LIGHTSPEED_HARBOR_ENVD_PATH`
+or a pinned release URL is set), verifies the archive SHA-256, uploads the
+binary, and refuses to continue when the document's `gitSha` or the
+sandbox's `envd --version` (which prints `git <sha>`) differs from the
+server's build. The data-plane protocol is versioned (2 since P151) and the
+gateway rejects a mismatched daemon at the handshake, so this check fails
+closed before a model call rather than at registration.
+`LIGHTSPEED_HARBOR_ENVD_ALLOW_MISMATCH=1` bypasses it for development only.
+
+## Session metadata, retention, and event accounting (P151, P153, P154)
+
+- `session/start` accepts `metadata` (same bounds as environment
+  registration metadata) and `deleteAfterCloseMs`. The adapter sends the
+  correlation map it also puts on the registered environment
+  (`source=harbor`, `harborSessionId`, `harborContextId`, `harborTaskName`,
+  `campaign`) and a retention of `LIGHTSPEED_HARBOR_SESSION_TTL_SEC`
+  (default 14 days), so `session/list {metadata: {campaign: …}}` finds a
+  job's sessions and they collect themselves.
+- `toolCallCompleted` carries `outputBytes` and `truncated`; `runFailed`
+  carries `kind`. The adapter's measures report tool output bytes,
+  truncations, and the failure kind from them.
+- The process tools are `run_process` and `continue_process`; a command's
+  leftover processes survive its exit and are reported to the model.
+  Their stdio stays envd's pipes, so the adapter keeps envd and the
+  registered environment alive through Harbor's verifier and lets the
+  ephemeral grace close the environment after the sandbox is destroyed.
+
 ## envd artifact
 
 The binary is built from `crates/environment-daemon` as `lightspeed-envd`.

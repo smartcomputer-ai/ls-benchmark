@@ -259,15 +259,23 @@ or exposing credentials.
 
 Exit: one command produces a reproducible paired local comparison.
 
-- [ ] Commit `configs/terminal-bench.local.yaml` with the Codex and Lightspeed
-  matrix: same immutable model id, same reasoning effort, equal
-  `n_concurrent`, interleaved trials, pinned dataset ref.
-- [ ] `scripts/preflight.py`: resolve both agent configurations and fail
-  unless model, provider route, reasoning, processing tier, output limit,
-  instruction bytes, task/image digests, compute, network, attempts, and
-  concurrency match. Run Harbor's `oracle` on the selected tasks. Make a real
-  TLS/WebSocket reachability check from a sandbox. Emit a redacted preflight
-  result for the provenance manifest.
+- [x] `configs/terminal-bench.paired.yaml`: Codex CLI (pinned `0.144.1`,
+  `web_search: disabled`) and Lightspeed, same model and effort, equal
+  `n_concurrent`, one job so trials interleave, pinned dataset. The Codex
+  arm needs `OPENAI_API_KEY` on the Harbor host (an operator hand-off; the
+  Lightspeed arm never sees it).
+- [x] `scripts/preflight.py`: config shape (pinned dataset, no timeout or
+  resource overrides, no retries), arm parity (model, reasoning effort,
+  concurrency, Codex `web_search` and version), live Lightspeed checks
+  (`initialize` build, envd discovery for the sandbox architecture at that
+  build, provider credential, model route and API kind, registration key
+  state), and the Codex credential. Writes `.local/preflight/<config>.json`.
+  Not covered: instruction-byte and image-digest comparison (Harbor does
+  both arms from one task cache, so they are identical by construction) and
+  a sandbox-side WebSocket probe (the install-only sweep plus one trial
+  cover it in practice).
+- [x] `configs/terminal-bench.oracle.yaml`: the oracle sweep as its own job;
+  tasks the oracle fails become predeclared exclusions for every arm.
 - [ ] Smoke allowlist covering file editing, long-running commands, process
   control, and output-heavy terminal interaction. Selection is for
   integration coverage, not score.
@@ -562,6 +570,30 @@ With the three-task rerun merged (`--supersede`; `fix-git` and
 **58 / 87 = 0.667**, report in `jobs/terminal-bench-lightspeed-2026-09-02-final/`.
 All 89 environments the campaign key admitted are `closed`; the runner has
 no containers left and 121 GB of images cached for the next run.
+
+Lightspeed shipped P151 to P157 on 2026-09-03 (deployed as `2b016737`,
+data-plane protocol 2). Adapter follow-up, done the same day: envd resolved
+from the deployment's discovery document and checked against the server's
+`gitSha` at setup (fail closed; `LIGHTSPEED_HARBOR_ENVD_ALLOW_MISMATCH=1`
+for development), musl targets, session `metadata` with `campaign` (run
+scripts default it to the job name) and `deleteAfterCloseMs` retention
+(`LIGHTSPEED_HARBOR_SESSION_TTL_SEC`, default 14 days), measures for tool
+output bytes, truncations, and failure kind. The runner no longer needs hz01
+or a locally built x86_64 envd; only arm64 development builds remain local.
+
+Verification-time change (2026-09-03, after the first P151 rerun): the
+adapter no longer stops envd or closes the environment in `finally`. With
+P151 a service the agent leaves running survives its command, but its stdio
+is envd's pipe, so stopping envd before the verifier killed it with EPIPE
+(`pypi-server` and `configure-git-webserver` failed again that way). Now
+both outlive the agent phase; Harbor destroys the sandbox after the
+verifier, the daemon dies with it, and the key's ephemeral grace (run
+scripts mint keys with 60 s) closes the environment. Consequences: the leak
+audit shows environments `offline` for up to a minute after each trial
+before `closed`; the key's `maxActiveEnvironments` must cover concurrency
+plus that tail (`ensure_registration_key` re-mints when the stored key is
+smaller). `keep_environment_for_verifier: false` restores the old teardown.
+This is the documented deviation from P149's "explicit close in finally".
 
 Root causes of the unsolved tasks, from the session events (2026-09-03):
 three tasks (`pypi-server`, `configure-git-webserver`,

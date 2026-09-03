@@ -22,7 +22,14 @@ ENV_ENVD_RELEASE_URL = "LIGHTSPEED_HARBOR_ENVD_RELEASE_URL"
 ENV_ENVD_SHA256 = "LIGHTSPEED_HARBOR_ENVD_SHA256"
 ENV_ENVD_VERSION = "LIGHTSPEED_HARBOR_ENVD_VERSION"
 ENV_ENVD_CA_FILE = "LIGHTSPEED_HARBOR_ENVD_CA_FILE"
+ENV_ENVD_DISCOVERY_URL = "LIGHTSPEED_HARBOR_ENVD_DISCOVERY_URL"
+ENV_ENVD_ALLOW_MISMATCH = "LIGHTSPEED_HARBOR_ENVD_ALLOW_MISMATCH"
 ENV_UNIVERSE = "LIGHTSPEED_UNIVERSE"
+ENV_CAMPAIGN = "LIGHTSPEED_HARBOR_CAMPAIGN"
+ENV_SESSION_TTL_SEC = "LIGHTSPEED_HARBOR_SESSION_TTL_SEC"
+
+DISCOVERY_PATH = "/.well-known/lightspeed-envd"
+DEFAULT_SESSION_TTL_SEC = 14 * 24 * 3600
 
 REQUIRED_HOST_VARS = (ENV_API_URL, ENV_API_KEY, ENV_REGISTRATION_KEY, ENV_GATEWAY_URL)
 
@@ -59,6 +66,14 @@ class HostSettings:
     # Sent as ``x-lightspeed-universe`` for a ``trusted-header`` gateway (the
     # ``./dev.sh`` full profile). ``single`` and ``api-key`` gateways reject it.
     universe: str | None = None
+    # Discovery document (P152) with the envd archive that matches the
+    # deployment; used when neither a local path nor a pinned release is set.
+    envd_discovery_url: str | None = None
+    # Development only: accept an envd whose build does not match the server's.
+    envd_allow_mismatch: bool = False
+    # Session metadata ``campaign`` and automatic deletion after close (P153/P154).
+    campaign: str | None = None
+    session_ttl_sec: int | None = DEFAULT_SESSION_TTL_SEC
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> HostSettings:
@@ -76,11 +91,8 @@ class HostSettings:
         envd_path = Path(env[ENV_ENVD_PATH]) if env.get(ENV_ENVD_PATH) else None
         release_url = env.get(ENV_ENVD_RELEASE_URL) or None
         sha256 = (env.get(ENV_ENVD_SHA256) or None) and env[ENV_ENVD_SHA256].strip().lower()
-        if envd_path is None and (release_url is None or sha256 is None):
-            raise ConfigError(
-                f"select an envd artifact: set {ENV_ENVD_PATH} for a local binary, "
-                f"or both {ENV_ENVD_RELEASE_URL} and {ENV_ENVD_SHA256} for a pinned release"
-            )
+        if envd_path is None and release_url is not None and sha256 is None:
+            raise ConfigError(f"{ENV_ENVD_RELEASE_URL} requires {ENV_ENVD_SHA256}")
         if envd_path is not None and release_url is not None:
             raise ConfigError(f"{ENV_ENVD_PATH} and {ENV_ENVD_RELEASE_URL} are mutually exclusive")
         if sha256 is not None and (
@@ -91,6 +103,17 @@ class HostSettings:
         ca_file = Path(env[ENV_ENVD_CA_FILE]) if env.get(ENV_ENVD_CA_FILE) else None
         if ca_file is not None and not ca_file.is_file():
             raise ConfigError(f"{ENV_ENVD_CA_FILE} does not name a readable file: {ca_file}")
+
+        discovery = (env.get(ENV_ENVD_DISCOVERY_URL) or "").strip() or _discovery_url(api_url)
+        ttl_raw = (env.get(ENV_SESSION_TTL_SEC) or "").strip()
+        if ttl_raw:
+            if not ttl_raw.isdigit():
+                raise ConfigError(
+                    f"{ENV_SESSION_TTL_SEC} must be a whole number of seconds (0 disables)"
+                )
+            session_ttl: int | None = int(ttl_raw) or None
+        else:
+            session_ttl = DEFAULT_SESSION_TTL_SEC
 
         return cls(
             api_url=api_url,
@@ -103,6 +126,11 @@ class HostSettings:
             envd_version=env.get(ENV_ENVD_VERSION) or None,
             envd_ca_file=ca_file,
             universe=(env.get(ENV_UNIVERSE) or "").strip() or None,
+            envd_discovery_url=discovery,
+            envd_allow_mismatch=(env.get(ENV_ENVD_ALLOW_MISMATCH) or "").strip()
+            in {"1", "true", "yes"},
+            campaign=(env.get(ENV_CAMPAIGN) or "").strip() or None,
+            session_ttl_sec=session_ttl,
         )
 
     def redacted(self) -> dict[str, str | None]:
@@ -116,11 +144,21 @@ class HostSettings:
             "envd_version": self.envd_version,
             "envd_ca_file": str(self.envd_ca_file) if self.envd_ca_file else None,
             "universe": self.universe,
+            "envd_discovery_url": self.envd_discovery_url,
+            "envd_allow_mismatch": self.envd_allow_mismatch,
+            "campaign": self.campaign,
+            "session_ttl_sec": self.session_ttl_sec,
         }
 
     def secrets(self) -> tuple[str, ...]:
         """Values that must never appear in any artifact or log."""
         return tuple(value for value in (self.api_key, self.registration_key) if value)
+
+
+def _discovery_url(api_url: str) -> str:
+    """``https://host/rpc`` -> ``https://host/.well-known/lightspeed-envd``."""
+    parts = urlsplit(api_url)
+    return f"{parts.scheme}://{parts.netloc}{DISCOVERY_PATH}"
 
 
 def _validate_gateway_url(url: str) -> None:

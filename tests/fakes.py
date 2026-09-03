@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 ALIVE = "__LIGHTSPEED_HARBOR_ALIVE__"
+GIT_SHA = "2b016737ea6144c7656e3fba8982d4eacdb831da"
 DEAD = "__LIGHTSPEED_HARBOR_DEAD__"
 
 RECEIPT = {
@@ -41,7 +42,7 @@ class FakeEnvironment:
     workdir: str | None = "/app"  # task.toml [environment].workdir; None = image default
     image_workdir: str = "/workspace"  # what `pwd` answers when no workdir is declared
     uname: str = "x86_64"
-    version_output: str = "lightspeed-envd 0.1.0 (deadbeef)"
+    version_output: str = f"lightspeed-envd 0.1.0 (git {GIT_SHA}, x86_64-unknown-linux-musl)"
     receipt: dict[str, Any] | None = field(default_factory=lambda: dict(RECEIPT))
     receipt_after_polls: int = 1
     envd_dies: bool = False
@@ -123,7 +124,9 @@ class FakeLightspeed:
         errors: dict[str, dict[str, Any]] | None = None,
         environment: dict[str, Any] | None = None,
         failure_message: str = "provider refused the request",
+        server_git_sha: str = GIT_SHA,
     ) -> None:
+        self.server_git_sha = server_git_sha
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.auth_headers: list[str | None] = []
         self.session_id = "session_1"
@@ -300,7 +303,17 @@ class FakeLightspeed:
         if method == "initialize":
             return {
                 "protocolVersion": "lightspeed.agent.api.v1",
-                "serverInfo": {"name": "lightspeed", "version": "test"},
+                "serverInfo": {
+                    "name": "lightspeed",
+                    "version": f"test+{GIT_SHA[:12]}",
+                    "gitSha": self.server_git_sha,
+                    "envd": {
+                        "gitSha": self.server_git_sha,
+                        "protocolVersion": 2,
+                        "targets": ["x86_64-unknown-linux-musl"],
+                        "version": "0.1.0",
+                    },
+                },
                 "capabilities": {},
             }
         if method == "models/list":
