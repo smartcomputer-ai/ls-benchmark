@@ -642,6 +642,10 @@ starts `&` jobs with SIGINT ignored, so Harbor never saw the signal; `start`
 now sets `set -m` before backgrounding and `stop` escalates to SIGTERM after
 60 s and removes leftover sandboxes. A cut-off trial's session stays open on
 the Lightspeed side; `session/close {force: true}` ends it.
+`ensure_registration_key` reuses a stored key only with
+`LS_KEY_MIN_HOURS_LEFT` (default 6) hours left before it expires, so a job
+started late in a key's 24 h life mints a fresh one instead of losing its
+registrations mid-run (2026-09-04).
 
 Second full run (2026-09-03 20:30 to 21:51 UTC, job
 `terminal-bench-lightspeed-hosted-20260903-203037`, server 2b016737, keep-alive,
@@ -653,10 +657,22 @@ chess-best-move, dna-assembly, mteb-retrieve (wrong answers this time),
 write-compressor (agent timeout at 894 s, passed before), and
 torch-tensor-parallelism (verifier timeout). Unsolved 19: 6 agent timeouts
 (caffe-cifar-10, extract-moves-from-video, gpt2-codegolf, make-doom-for-mips,
-train-fasttext, write-compressor), 2 verifier timeouts (both torch tasks: the
-verifier installs torch with CUDA wheels and stalls in the tests after 900 s,
-probably CPU contention at 12-way concurrency; rerun those two alone to
-classify), 11 wrong answers. Sleep polling is gone (3 `sleep` calls in the
+train-fasttext, write-compressor), 2 verifier timeouts (both torch tasks),
+11 wrong answers. The two verifier timeouts were re-verified on 2026-09-04
+by recovering the agent's files from the tool-call argument blobs
+(`blobs/read` on `argumentsRef`) and running each task's `tests/test.sh` in
+a fresh container from the task image with one CPU and no other load: both
+would have failed anyway. torch-pipeline-parallelism fails
+`test_pipeline_parallel[1]` and `[2]` (backward mismatch at `lm_head.bwd`,
+max diff 0.036) and the two tests take 630 s alone, so the 900 s verifier
+budget is tight even unloaded; torch-tensor-parallelism passes 9 of 13 and
+fails every `test_row_parallel_linear` with world size 2 and 4 (the agent's
+RowParallelLinear expects the full input, the test passes the pre-scattered
+slice), which is exactly the wording 2.1 clarified. So both count as wrong
+answers, and the 12-way contention only decided whether they showed up as
+timeouts or failures. The recovery recipe is
+`scratchpad/reverify/reverify.sh` from that session; worth moving into
+`scripts/` when a verifier timeout needs classifying again. Sleep polling is gone (3 `sleep` calls in the
 whole run); the model used `job_run` 18 times, `job_submit` 10, `await` 11,
 `write_stdin` 110. Leak audit: all 94 environments on the campaign key
 closed, every listed session closed (`session/list` pages at 50). For

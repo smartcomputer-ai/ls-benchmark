@@ -59,11 +59,16 @@ ensure_registration_key() { # ensure_registration_key <file> <display-name> <max
       read -r st exp cap <<<"$(rpc environments/registration-keys/read "{\"registrationKeyId\":\"$key_id\"}" 2>/dev/null \
         | json_get - 'str(d["result"]["result"]["registrationKey"]["status"]) + " " + str(d["result"]["result"]["registrationKey"].get("expiresAtMs") or 0) + " " + str(d["result"]["result"]["registrationKey"].get("maxActiveEnvironments") or 0)' 2>/dev/null \
         || echo "unknown 0 0")"
-      if [ "$st" = active ] && { [ "$exp" = 0 ] || [ "$exp" -gt $(( now_ms + 3600000 )) ]; } && { [ "$cap" = 0 ] || [ "$cap" -ge "$max_active" ]; }; then
+      # A key that expires mid-run breaks every registration after that
+      # point, so reuse one only with LS_KEY_MIN_HOURS_LEFT (default 6, more
+      # than a full Terminal-Bench job) still on the clock.
+      local left_h="never"
+      [ "$exp" != 0 ] && left_h="$(( (exp - now_ms) / 3600000 ))h"
+      if [ "$st" = active ] && { [ "$exp" = 0 ] || [ "$exp" -gt $(( now_ms + ${LS_KEY_MIN_HOURS_LEFT:-6} * 3600000 )) ]; } && { [ "$cap" = 0 ] || [ "$cap" -ge "$max_active" ]; }; then
         key_ok=true
-        log "registration key $key_id active (max active $cap)"
+        log "registration key $key_id active (max active $cap, expires in $left_h)"
       else
-        log "registration key $key_id is $st with max active $cap; minting a new one"
+        log "registration key $key_id is $st (max active $cap, expires in $left_h); minting a new one"
       fi
     fi
   fi
