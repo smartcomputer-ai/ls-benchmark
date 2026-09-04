@@ -672,13 +672,39 @@ slice), which is exactly the wording 2.1 clarified. So both count as wrong
 answers, and the 12-way contention only decided whether they showed up as
 timeouts or failures. The recovery recipe is
 `scratchpad/reverify/reverify.sh` from that session; worth moving into
-`scripts/` when a verifier timeout needs classifying again. Sleep polling is gone (3 `sleep` calls in the
+`scripts/` when a verifier timeout needs classifying again.
+Sleep polling is gone (3 `sleep` calls in the
 whole run); the model used `job_run` 18 times, `job_submit` 10, `await` 11,
 `write_stdin` 110. Leak audit: all 94 environments on the campaign key
 closed, every listed session closed (`session/list` pages at 50). For
 reference, the official Codex + gpt-5.6-terra entry on Terminal-Bench 2.1
 reports 78.4 % ± 2.5 over 5 attempts; this is one attempt on 2.0, so treat
 the parity as suggestive until the paired run.
+
+First Terminal-Bench 2.1 run (2026-09-04 07:46 to 09:01 UTC, job
+`terminal-bench-lightspeed-hosted-20260904-074601`, same server, adapter,
+prompt, and concurrency as the 2.0 run the day before): **71 / 89 = 0.798**,
+75 minutes wall clock, against the published 78.4 % ± 2.5 for Codex CLI
+with the same model on 2.1 (5 attempts; ours is one). Versus the 2.0 run:
+gained 9 (torch-tensor-parallelism, mteb-retrieve, caffe-cifar-10, and
+sam-cell-seg are among the tasks 2.1 clarified or relaxed; chess-best-move,
+dna-assembly, write-compressor, make-mips-interpreter, overfull-hbox are
+variance), lost 8, all wrong answers or timeouts: adaptive-rejection-sampler
+and query-optimize changed in 2.1, and query-optimize is a runtime-ratio
+test that missed by 5 % under 12-way load; gcode-to-text,
+large-scale-text-editing, protein-assembly, video-processing are plain
+misses; rstan-to-pystan timed out at 1800 s; model-extraction-relu-logits
+ended in `runFailed` / `model_failure` because the OpenAI Responses API
+answered HTTP 400 "flagged for possible cybersecurity risk" at turn 5, a
+provider-side refusal the run cannot recover from (it passed on 2.0, so the
+refusal is content-dependent). Unsolved 18: 3 agent timeouts
+(extract-moves-from-video, rstan-to-pystan, train-fasttext), 1 verifier
+timeout (torch-pipeline-parallelism, see above), 1 provider refusal, 13
+wrong answers. Leak audit clean (all 188 environments on the key closed,
+every listed session closed, no containers). Timing-sensitive verifiers to
+keep in mind at concurrency 12: torch-pipeline-parallelism (630 s of tests
+in a 900 s budget) and query-optimize (runtime ratio against a golden
+query).
 
 Root causes of the unsolved tasks, from the session events (2026-09-03):
 three tasks (`pypi-server`, `configure-git-webserver`,
