@@ -1,5 +1,5 @@
 # End-to-end smoke of the adapter on the hz02 runner before a full campaign:
-# a handful of quick Terminal-Bench 2.0 tasks, same model, effort, and policy
+# a handful of quick Terminal-Bench 2.1 tasks, same model, effort, and policy
 # as configs/terminal-bench.lightspeed.yaml. Not a score; a check that the
 # whole path (discovery envd, inline profile with the harness prompt and job
 # tools, keep-alive through the verifier, artifacts, leak audit) works.
@@ -24,14 +24,16 @@ environment:
   delete: true
 
 datasets:
-  - name: terminal-bench
-    version: "2.0"
+  # Terminal-Bench 2.1 hub package, pinned like configs/terminal-bench.lightspeed.yaml.
+  - name: terminal-bench/terminal-bench-2-1
+    ref: sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a
+    # Hub package task names carry the package's org prefix.
     task_names:
-      - regex-log
-      - openssl-selfsigned-cert
-      - sqlite-db-truncate
-      - kv-store-grpc
-      - pypi-server
+      - terminal-bench/regex-log
+      - terminal-bench/openssl-selfsigned-cert
+      - terminal-bench/sqlite-db-truncate
+      - terminal-bench/kv-store-grpc
+      - terminal-bench/pypi-server
 
 agents:
   - import_path: lightspeed_harbor.agent:LightspeedAgent

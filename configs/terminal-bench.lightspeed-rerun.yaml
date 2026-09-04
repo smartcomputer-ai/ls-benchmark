@@ -17,16 +17,18 @@ environment:
   delete: true
 
 datasets:
-  - name: terminal-bench
-    version: "2.0"
+  # Terminal-Bench 2.1 hub package, pinned like configs/terminal-bench.lightspeed.yaml.
+  - name: terminal-bench/terminal-bench-2-1
+    ref: sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a
+    # Hub package task names carry the package's org prefix.
     task_names:
-      - pypi-server
-      - configure-git-webserver
-      - install-windows-3.11
-      - fix-ocaml-gc
-      - mcmc-sampling-stan
-      - make-doom-for-mips
-      - train-fasttext
+      - terminal-bench/pypi-server
+      - terminal-bench/configure-git-webserver
+      - terminal-bench/install-windows-3.11
+      - terminal-bench/fix-ocaml-gc
+      - terminal-bench/mcmc-sampling-stan
+      - terminal-bench/make-doom-for-mips
+      - terminal-bench/train-fasttext
 
 agents:
   - import_path: lightspeed_harbor.agent:LightspeedAgent

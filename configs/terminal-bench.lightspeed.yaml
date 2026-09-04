@@ -1,8 +1,8 @@
-# Terminal-Bench 2.0, Lightspeed arm only, on the hz02 runner VM.
+# Terminal-Bench 2.1, Lightspeed arm only, on the hz02 runner VM.
 #
-# Schema: Harbor 0.22.0. Dataset resolved by Harbor's default registry:
-# laude-institute/terminal-bench-2 at 69671fbaac6d67a7ef0dfec016cc38a64ef7a77c,
-# 89 tasks, prebuilt linux/amd64 images, 900 s agent and verifier timeouts.
+# Schema: Harbor 0.22.0. Dataset: the terminal-bench/terminal-bench-2-1 hub
+# package pinned by digest (see the datasets block), 89 tasks, prebuilt
+# linux/amd64 images, 900 s default agent and verifier timeouts.
 #
 # Model and effort: gpt-5.6-terra (chosen 2026-09-02; not a dated snapshot,
 # the resolved id is recorded in provenance.json) at reasoning effort `high`,
@@ -26,8 +26,13 @@ environment:
   delete: true
 
 datasets:
-  - name: terminal-bench
-    version: "2.0"
+  # Terminal-Bench 2.1 (switched 2026-09-04): the same 89 tasks as 2.0 with
+  # 26 of them fixed (bugs, timeouts, resources, reward-hacking robustness).
+  # A Harbor hub package, pinned to the digest the 2.1 leaderboard code pins
+  # (harbor-framework/terminal-bench-2-1, leaderboard/core/hub.py). The two
+  # 2.0 runs (58/87, 70/89) are not comparable with 2.1 numbers.
+  - name: terminal-bench/terminal-bench-2-1
+    ref: sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a
     # No predeclared exclusions. The 2026-09-02 install-only sweep on the
     # hz02 runner (89 images, envd --version as the task user) excluded the
     # two debian:bullseye images for lacking glibc 2.32+; the release envd is

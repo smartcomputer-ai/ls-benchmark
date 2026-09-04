@@ -111,7 +111,12 @@ async def test_happy_path_end_to_end(tmp_path: Path, host: HostSettings):
     profile = session_start["profile"]
     assert profile["kind"] == "inline"
     assert profile["profile"]["instructions"]["type"] == "text"
-    assert profile["profile"]["instructions"]["text"].startswith("# Working in this environment")
+    # The bundled prompt goes out verbatim; its wording is the operator's.
+    from importlib import resources
+
+    bundled = resources.files("lightspeed_harbor").joinpath("prompts", "harbor-terminal.md")
+    assert profile["profile"]["instructions"]["text"] == bundled.read_text()
+    assert "# Working in this environment" in profile["profile"]["instructions"]["text"]
     config = profile["profile"]["config"]
     assert config["model"] == {
         "providerId": "openai",

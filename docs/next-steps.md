@@ -44,14 +44,23 @@ Harbor contract as found in the pinned package (`harbor.agents.base`,
   `-c model_reasoning_effort=`), `oracle`, `nop`.
 - CLI: `harbor run -c <config>` (alias of `harbor job start`), `harbor task`,
   `harbor dataset`, `harbor trial`, `harbor analyze`.
-- Dataset (corrected 2026-09-02): with no `registry_url`/`repo`, Harbor's
-  default `HarborRegistryClient` resolves `name: terminal-bench`,
-  `version: "2.0"`: 89 tasks from `laude-institute/terminal-bench-2` at
-  `69671fbaac6d67a7ef0dfec016cc38a64ef7a77c` with prebuilt images
-  `alexgshaw/<task>:20251031`. `terminal-bench-sample` `2.0` is a 10-task
-  subset of the same repository. `terminal-bench/terminal-bench-2-1` is a Hub
-  *leaderboard* slug, not a dataset name; the registry answers
-  `Dataset terminal-bench/terminal-bench-2-1 not found`. Task defaults seen:
+- Dataset (switched to 2.1 on 2026-09-04): `name:
+  terminal-bench/terminal-bench-2-1` with `ref: sha256:7d7bdc1c…` is a Harbor
+  *hub package* (`PackageDatasetClient`, cached under
+  `~/.cache/harbor/tasks/packages/`), the same 89 tasks as 2.0 with 26 of
+  them fixed; the digest is the one the 2.1 leaderboard code pins
+  (`harbor-framework/terminal-bench-2-1`, `leaderboard/core/hub.py`), and
+  `@latest` resolved to it on 2026-09-04. The earlier 2.0 runs used Harbor's
+  registry dataset `name: terminal-bench`, `version: "2.0"` (89 tasks from
+  `laude-institute/terminal-bench-2` at `69671fbaac6d67a7ef0dfec016cc38a64ef7a77c`,
+  images `alexgshaw/<task>:20251031`); the note that the 2.1 slug did not
+  resolve was a wrong slug form on 2026-09-02. Package task names carry the
+  org prefix (`terminal-bench/regex-log`), so `task_names` filters need it
+  and cross-version comparisons must strip it (trial directories and
+  `report.py` use the bare name). Verified on the runner the same day:
+  `configs/terminal-bench.smoke.yaml` on 2.1, job
+  `terminal-bench-smoke-hosted-20260904-061020`, 5/5 in 14 to 52 s, config
+  recorded with the pinned digest, leak audit clean. Task defaults seen:
   `agent.timeout_sec = 900`, `verifier.timeout_sec = 900`, `cpus = 1`,
   `memory = 2G`–`4G`, `storage = 10G`, workdir `/app`.
 - Image architecture: the inspected task images are single-manifest
@@ -634,6 +643,27 @@ now sets `set -m` before backgrounding and `stop` escalates to SIGTERM after
 60 s and removes leftover sandboxes. A cut-off trial's session stays open on
 the Lightspeed side; `session/close {force: true}` ends it.
 
+Second full run (2026-09-03 20:30 to 21:51 UTC, job
+`terminal-bench-lightspeed-hosted-20260903-203037`, server 2b016737, keep-alive,
+jobs, harness prompt, all 89 tasks, concurrency 12): **70 / 89 = 0.787**,
+up from 58 / 87 = 0.667. 81 minutes wall clock. Gained 18 (all three service
+tasks, the build-heavy set incl. build-pov-ray, both qemu tasks, fix-ocaml-gc,
+mcmc-sampling-stan, prove-plus-comm, video-processing, ...), lost 5:
+chess-best-move, dna-assembly, mteb-retrieve (wrong answers this time),
+write-compressor (agent timeout at 894 s, passed before), and
+torch-tensor-parallelism (verifier timeout). Unsolved 19: 6 agent timeouts
+(caffe-cifar-10, extract-moves-from-video, gpt2-codegolf, make-doom-for-mips,
+train-fasttext, write-compressor), 2 verifier timeouts (both torch tasks: the
+verifier installs torch with CUDA wheels and stalls in the tests after 900 s,
+probably CPU contention at 12-way concurrency; rerun those two alone to
+classify), 11 wrong answers. Sleep polling is gone (3 `sleep` calls in the
+whole run); the model used `job_run` 18 times, `job_submit` 10, `await` 11,
+`write_stdin` 110. Leak audit: all 94 environments on the campaign key
+closed, every listed session closed (`session/list` pages at 50). For
+reference, the official Codex + gpt-5.6-terra entry on Terminal-Bench 2.1
+reports 78.4 % ± 2.5 over 5 attempts; this is one attempt on 2.0, so treat
+the parity as suggestive until the paired run.
+
 Root causes of the unsolved tasks, from the session events (2026-09-03):
 three tasks (`pypi-server`, `configure-git-webserver`,
 `install-windows-3.11`) lost the service the agent started because envd
@@ -651,8 +681,10 @@ the user locked so sshd refuses key auth until `usermod -p '*'`. And GitHub
 throttles unauthenticated git-over-HTTPS from the VM's Hetzner address (10 of
 12 parallel shallow clones failed, then single clones), so the dataset is
 downloaded into Harbor's task cache on the laptop
-(`harbor dataset download terminal-bench@2.0 --cache`) and `sync` ships
-`~/.cache/harbor/tasks` to the VM; the job finds every task cached. Docker
+(`harbor dataset download terminal-bench/terminal-bench-2-1@sha256:7d7bdc1c… --cache`;
+the 2.0 runs used `terminal-bench@2.0`) and `sync` ships
+`~/.cache/harbor/tasks` (registry tasks and hub packages) to the VM; the
+job finds every task cached. Docker
 Hub allows 100 anonymous pulls per hour from that address, enough for the 89
 images.
 

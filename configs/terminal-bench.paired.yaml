@@ -1,10 +1,9 @@
-# Paired Terminal-Bench 2.0 comparison: built-in Codex CLI versus Lightspeed,
+# Paired Terminal-Bench 2.1 comparison: built-in Codex CLI versus Lightspeed,
 # same model, same reasoning effort, same tasks, interleaved in one job.
 #
-# Schema: Harbor 0.22.0. Dataset resolved by Harbor's default registry
-# (laude-institute/terminal-bench-2 at 69671fbaac6d67a7ef0dfec016cc38a64ef7a77c,
-# 89 tasks). No timeout or resource overrides, so the run stays comparable to
-# the public leaderboard's rules.
+# Schema: Harbor 0.22.0. Dataset: the terminal-bench/terminal-bench-2-1 hub
+# package pinned by digest (89 tasks). No timeout or resource overrides, so
+# the run stays comparable to the public leaderboard's rules.
 #
 # Model and effort: gpt-5.6-terra at `high` on both arms. The Codex CLI is
 # pinned to the version the official Terminal-Bench 2.1 submission for this
@@ -32,8 +31,9 @@ environment:
   delete: true
 
 datasets:
-  - name: terminal-bench
-    version: "2.0"
+  # Terminal-Bench 2.1 hub package, pinned like configs/terminal-bench.lightspeed.yaml.
+  - name: terminal-bench/terminal-bench-2-1
+    ref: sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a
     exclude_task_names: []
 
 agents:
