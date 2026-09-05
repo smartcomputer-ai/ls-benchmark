@@ -630,3 +630,27 @@ async def test_instructions_come_from_a_file_and_are_recorded(tmp_path: Path, ho
 def test_unknown_instructions_fail_at_construction(tmp_path: Path, host: HostSettings):
     with pytest.raises(HarnessSetupError, match="neither a bundled prompt nor a file"):
         make_agent(tmp_path, host, FakeLightspeed(), instructions="no-such-prompt")
+
+
+async def test_a_silent_version_probe_is_retried(tmp_path: Path, host: HostSettings, monkeypatch):
+    import lightspeed_harbor.envd as envd_module
+
+    monkeypatch.setattr(envd_module, "_VERSION_PROBE_DELAY_SEC", 0)
+    env = FakeEnvironment(silent_version_probes=1)
+    agent = make_agent(tmp_path, host, FakeLightspeed())
+    await agent.setup(env)
+    assert env.version_probes == 2
+    assert GIT_SHA_EXPECTED in agent._envd_version
+
+
+async def test_a_persistently_silent_probe_is_a_setup_failure(
+    tmp_path: Path, host: HostSettings, monkeypatch
+):
+    import lightspeed_harbor.envd as envd_module
+
+    monkeypatch.setattr(envd_module, "_VERSION_PROBE_DELAY_SEC", 0)
+    env = FakeEnvironment(silent_version_probes=10)
+    agent = make_agent(tmp_path, host, FakeLightspeed())
+    with pytest.raises(HarnessSetupError, match="printed nothing in 3 attempts"):
+        await agent.setup(env)
+    assert env.version_probes == 3

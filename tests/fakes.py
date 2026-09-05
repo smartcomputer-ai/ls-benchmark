@@ -43,6 +43,10 @@ class FakeEnvironment:
     image_workdir: str = "/workspace"  # what `pwd` answers when no workdir is declared
     uname: str = "x86_64"
     version_output: str = f"lightspeed-envd 0.1.0 (git {GIT_SHA}, x86_64-unknown-linux-musl)"
+    # How many `--version` probes answer with exit 0 and no output first (the
+    # Docker backend does that occasionally right after the upload).
+    silent_version_probes: int = 0
+    version_probes: int = 0
     receipt: dict[str, Any] | None = field(default_factory=lambda: dict(RECEIPT))
     receipt_after_polls: int = 1
     envd_dies: bool = False
@@ -73,6 +77,9 @@ class FakeEnvironment:
         if command == "pwd":
             return FakeExecResult(0, self.image_workdir + "\n")
         if command.endswith("--version"):
+            self.version_probes += 1
+            if self.version_probes <= self.silent_version_probes:
+                return FakeExecResult(0, "")
             return FakeExecResult(0, self.version_output + "\n")
         if "nohup" in command and "LIGHTSPEED_ENVD_GATEWAY_URL" in command:
             self.started = True

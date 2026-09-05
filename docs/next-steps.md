@@ -647,6 +647,15 @@ the Lightspeed side; `session/close {force: true}` ends it.
 started late in a key's 24 h life mints a fresh one instead of losing its
 registrations mid-run (2026-09-04).
 
+Setup flake (2026-09-05, first smoke against server build 59ffa7ce): two of
+five trials failed `setup()` with "envd in the sandbox reports ''" because
+the Docker backend's exec of `envd --version` returned exit 0 with empty
+output right after the upload; the same binary printed its version on those
+images every time by hand. `envd.install` now probes up to three times a
+second apart and fails with "printed nothing" only after that. The other
+three trials passed on the new build (session profiles unified in #76,
+builtin tools resolved per model in #77, content references in #78).
+
 Second full run (2026-09-03 20:30 to 21:51 UTC, job
 `terminal-bench-lightspeed-hosted-20260903-203037`, server 2b016737, keep-alive,
 jobs, harness prompt, all 89 tasks, concurrency 12): **70 / 89 = 0.787**,

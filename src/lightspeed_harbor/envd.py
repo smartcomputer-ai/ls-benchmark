@@ -65,6 +65,9 @@ METADATA_RESERVED_PREFIX = "lightspeed."
 
 _ALIVE = "__LIGHTSPEED_HARBOR_ALIVE__"
 _DEAD = "__LIGHTSPEED_HARBOR_DEAD__"
+# `envd --version` right after upload: attempts before an empty answer is fatal.
+_VERSION_PROBE_ATTEMPTS = 3
+_VERSION_PROBE_DELAY_SEC = 1.0
 
 
 class ExecResultLike(Protocol):
@@ -402,10 +405,25 @@ async def install(
         await environment.upload_file(ca_file, str(paths.ca_file))
     await _fix_ownership(environment, paths, [paths.binary] + ([paths.ca_file] if ca_file else []))
     await _exec_checked(environment, f"chmod 0755 {_q(paths.binary)}", what="mark envd executable")
-    result = await _exec_checked(
-        environment, f"{_q(paths.binary)} --version", what="run envd --version", timeout_sec=30
+    # A sandbox exec occasionally returns exit 0 with empty output right after
+    # the upload (seen twice in one five-trial job on the Docker backend while
+    # five sandboxes started at once). The probe is idempotent, so ask again
+    # before treating silence as the wrong build.
+    last: ExecResultLike | None = None
+    for attempt in range(_VERSION_PROBE_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(_VERSION_PROBE_DELAY_SEC)
+        last = await _exec_checked(
+            environment, f"{_q(paths.binary)} --version", what="run envd --version", timeout_sec=30
+        )
+        version = (last.stdout or "").strip() or (last.stderr or "").strip()
+        if version:
+            return version
+    detail = ((last.stderr if last else "") or "").strip()[-200:]
+    raise HarnessSetupError(
+        f"envd --version printed nothing in {_VERSION_PROBE_ATTEMPTS} attempts"
+        + (f" (stderr: {detail})" if detail else "")
     )
-    return (result.stdout or "").strip()
 
 
 async def _fix_ownership(
